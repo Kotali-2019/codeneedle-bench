@@ -28,7 +28,10 @@ from pathlib import Path
 # This file lives in analysis/, so REPO_ROOT is one level up.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))   # so `import bench…` works regardless of cwd
-PASS_THRESHOLD = 8    # matches bench/scorer.py
+
+from bench.scorer import PASS_RATIO  # noqa: E402 — needs the sys.path insert above
+
+PASS_PCT = PASS_RATIO * 100
 LEGEND_ROW_PX = 26    # how much vertical space each legend entry needs
 
 # Stable color palette — assigned once per model so every chart uses the same color.
@@ -46,6 +49,32 @@ class Run:
     model: str
     group_name: str
     data: dict
+    group_max: int = 0   # most queries any run in this group has; set by load_runs
+
+    @property
+    def n_queries(self) -> int:
+        return len(self.data.get("results", []))
+
+    @property
+    def complete(self) -> bool:
+        """Whether this run finished every query it planned.
+
+        Dumps from schema_version >= 2 say so directly. Older dumps have no
+        such field, so fall back to comparing against the busiest run in the
+        same corpus group — a run with fewer queries than its peers was cut
+        short, and must not be charted as if it were a full result.
+        """
+        if "complete" in self.data:
+            return bool(self.data["complete"])
+        return self.group_max == 0 or self.n_queries >= self.group_max
+
+    @property
+    def label(self) -> str:
+        """Model name, flagged when the run didn't finish every query."""
+        if self.complete:
+            return self.model
+        planned = self.data.get("queries_planned") or self.group_max or "?"
+        return f"{self.model} ⚠ INCOMPLETE {self.n_queries}/{planned}"
 
 
 def _group_name(data: dict) -> str:
@@ -55,6 +84,27 @@ def _group_name(data: dict) -> str:
     if len(files) == 1:
         return Path(files[0]).stem
     return "+".join(Path(f).stem for f in files[:3])
+
+
+def _label_from_config(result_path: Path) -> str | None:
+    """Recover a display label for a dump written before `model_label` existed.
+
+    Result files are named `<corpus>__<model-config-stem>.json`, so the model
+    config can be located from the filename and its `label` read directly.
+    """
+    stem = result_path.stem
+    if "__" not in stem:
+        return None
+    model_stem = stem.split("__", 1)[1]
+    try:
+        import tomllib
+
+        cfg = REPO_ROOT / "configs" / "models" / f"{model_stem}.toml"
+        if not cfg.is_file():
+            return None
+        return tomllib.loads(cfg.read_text()).get("label")
+    except Exception:
+        return None
 
 
 def load_runs(results_dir: Path) -> dict[str, list[Run]]:
@@ -68,7 +118,22 @@ def load_runs(results_dir: Path) -> dict[str, list[Run]]:
         if not data.get("results"):
             continue
         group = _group_name(data)
-        groups[group].append(Run(path=p, model=data.get("model", p.stem), group_name=group, data=data))
+        # Prefer the config's display label: raw server ids can misdescribe a
+        # build (an MLX 4-bit registered as plain "qwen3.6-27b", for instance).
+        name = (
+            data.get("model_label")
+            or _label_from_config(p)
+            or data.get("model")
+            or p.stem
+        )
+        groups[group].append(Run(path=p, model=name, group_name=group, data=data))
+
+    # Now that every run in a group is known, record the busiest one so legacy
+    # dumps (no `complete` field) can still be recognized as cut short.
+    for runs in groups.values():
+        peak = max((r.n_queries for r in runs), default=0)
+        for r in runs:
+            r.group_max = peak
     return groups
 
 
@@ -140,7 +205,11 @@ def _chart_height(*, content_rows: int, n_legend_entries: int, base: int = 420) 
 
 def leaderboard(runs: list[Run], colors: dict[str, str]):
     """Horizontal bar chart, one trace per run (so each is independently
-    toggleable from the legend). Sorted best → worst by primary lines matched.
+    toggleable from the legend). Sorted best → worst by percentage matched.
+
+    Percentage, not absolute count: a run that fail-fasted after 4 of 16
+    queries has a much smaller denominator, so comparing raw totals made an
+    aborted run look like a terrible model rather than a broken one.
     """
     import plotly.graph_objects as go
 
@@ -148,57 +217,66 @@ def leaderboard(runs: list[Run], colors: dict[str, str]):
     for r in runs:
         matched = sum(x.get("primary_matched", 0) for x in r.data["results"])
         total = sum(x.get("primary_total", 0) for x in r.data["results"])
+        code_m = sum(x.get("code_matched", 0) for x in r.data["results"])
+        code_t = sum(x.get("code_total", 0) for x in r.data["results"])
         passed = sum(1 for x in r.data["results"] if x.get("passed"))
         queries = len(r.data["results"])
         halluc = sum(x.get("hallucinated", 0) for x in r.data["results"])
         errored = sum(1 for x in r.data["results"] if x.get("error"))
         rows.append({
-            "model": r.model, "stem": r.path.stem,
+            "model": r.label, "stem": r.path.stem, "color_key": r.model,
             "matched": matched, "total": total,
+            "pct": (matched / total * 100) if total else 0.0,
+            "code_m": code_m, "code_t": code_t,
             "passed": passed, "queries": queries,
             "halluc": halluc, "errored": errored,
+            "complete": r.complete,
         })
-    rows.sort(key=lambda d: d["matched"], reverse=True)
+    rows.sort(key=lambda d: d["pct"], reverse=True)
 
     if not rows:
         return None
 
-    max_total = max(r["total"] for r in rows) or 1
-
     fig = go.Figure()
     for row in rows:
+        flag = "" if row["complete"] else " ⚠ INCOMPLETE"
+        code_pct = f"{row['code_m']/row['code_t']*100:.0f}%" if row["code_t"] else "n/a"
         annotation = (
-            f"{row['matched']}/{row['total']} lines · "
+            f"{row['pct']:.0f}% ({row['matched']}/{row['total']}) · "
+            f"code {code_pct} · "
             f"{row['passed']}/{row['queries']} pass · "
             f"{row['halluc']} halluc"
             + (f" · {row['errored']} err" if row['errored'] else "")
+            + flag
         )
         hover = (
             f"<b>{row['model']}</b><br>"
-            f"file: {row['stem']}<br>"
-            f"matched: {row['matched']} / {row['total']}<br>"
+            f"run: {row['stem']}<br>"
+            f"scored lines: {row['matched']} / {row['total']} ({row['pct']:.1f}%)<br>"
+            f"code lines: {row['code_m']} / {row['code_t']} ({code_pct})<br>"
             f"pass: {row['passed']} / {row['queries']}<br>"
             f"hallucinated: {row['halluc']}<br>"
             f"errored: {row['errored']}"
+            + ("" if row["complete"] else "<br><b>⚠ run did not complete</b>")
         )
         fig.add_trace(go.Bar(
-            x=[row["matched"]],
+            x=[row["pct"]],
             y=[row["stem"]],
             orientation="h",
             name=row["model"],
             legendgroup=row["model"],
             text=[annotation],
             textposition="outside",
-            marker_color=colors[row["model"]],
-            marker_line_color="#fff",
-            marker_line_width=1,
+            marker_color=colors[row["color_key"]],
+            marker_line_color="#c00" if not row["complete"] else "#fff",
+            marker_line_width=3 if not row["complete"] else 1,
             hovertext=[hover],
             hoverinfo="text",
         ))
 
     fig.update_layout(
-        title="Leaderboard · total primary lines matched (of possible)",
-        xaxis=dict(title="lines matched", range=[0, max_total * 1.4]),
+        title="Leaderboard · % of scored lines matched (blank lines excluded)",
+        xaxis=dict(title="% of scored lines matched", range=[0, 190]),
         yaxis=dict(autorange="reversed", automargin=True),
         height=_chart_height(content_rows=len(rows), n_legend_entries=len(rows)),
         margin=dict(l=20, r=40, t=70, b=60),
@@ -230,40 +308,44 @@ def per_function_bars(runs: list[Run], colors: dict[str, str]):
         return None
 
     fig = go.Figure()
-    total_max = 20
     for r in runs:
-        y = []
+        y, custom = [], []
         for fn in fns:
             x = next((z for z in r.data["results"] if z["function"] == fn), None)
             if x is None or x.get("error"):
                 y.append(None)
+                custom.append([r.path.stem, "—"])
             else:
-                y.append(x.get("primary_matched", 0))
-                total_max = max(total_max, x.get("primary_total", 20))
+                total = x.get("primary_total") or 0
+                # Percentage, because primary_total now varies per function
+                # (blank lines are excluded from the denominator).
+                y.append(x.get("primary_matched", 0) / total * 100 if total else 0)
+                custom.append([r.path.stem,
+                               f"{x.get('primary_matched', 0)}/{total}"])
         fig.add_bar(
             x=fns, y=y,
-            name=r.model,
-            legendgroup=r.model,
+            name=r.label,
+            legendgroup=r.label,
             marker_color=colors[r.model],
-            customdata=[r.path.stem] * len(fns),
+            customdata=custom,
             hovertemplate=(
                 "<b>%{x}</b><br>"
-                "model: " + r.model + "<br>"
-                "run: %{customdata}<br>"
-                "matched: %{y}<extra></extra>"
+                "model: " + r.label + "<br>"
+                "run: %{customdata[0]}<br>"
+                "matched: %{customdata[1]} (%{y:.0f}%)<extra></extra>"
             ),
         )
 
     fig.add_hline(
-        y=PASS_THRESHOLD, line_dash="dash", line_color="#888",
-        annotation_text=f"pass threshold ({PASS_THRESHOLD})",
+        y=PASS_PCT, line_dash="dash", line_color="#888",
+        annotation_text=f"pass threshold ({PASS_PCT:.0f}%)",
         annotation_position="top right",
     )
     fig.update_layout(
         title="Per-function score · bars above the dashed line passed",
         xaxis=dict(title="function (sorted by average difficulty)", tickangle=-40,
                    automargin=True),
-        yaxis=dict(title="primary lines matched", range=[0, total_max + 2]),
+        yaxis=dict(title="% of scored lines matched", range=[0, 108]),
         barmode="group",
         bargap=0.15,
         bargroupgap=0.05,
@@ -289,7 +371,9 @@ def recall_vs_depth(runs: list[Run], colors: dict[str, str], positions: dict[str
             fn = x["function"]
             if fn not in positions:
                 continue
-            total = x.get("primary_total") or 20
+            total = x.get("primary_total") or 0
+            if not total:
+                continue
             pct = x.get("primary_matched", 0) / total * 100
             pts.append((positions[fn], pct, fn, x.get("primary_matched", 0), total))
         if not pts:
@@ -302,15 +386,17 @@ def recall_vs_depth(runs: list[Run], colors: dict[str, str], positions: dict[str
         hover = [
             f"<b>{p[2]}</b><br>line {p[0]:,}<br>"
             f"{p[3]}/{p[4]} matched ({p[1]:.0f}%)"
-            f"<br>model: {r.model}<br>run: {r.path.stem}"
+            f"<br>model: {r.label}<br>run: {r.path.stem}"
             for p in pts
         ]
         fig.add_trace(go.Scatter(
             x=xs, y=ys,
             mode="lines+markers",
-            name=r.model,
-            legendgroup=r.model,
-            line=dict(color=colors[r.model], width=2),
+            name=r.label,
+            legendgroup=r.label,
+            # Dashed for an aborted run — too few points to read as a trend.
+            line=dict(color=colors[r.model], width=2,
+                      dash="solid" if r.complete else "dot"),
             marker=dict(size=10, color=colors[r.model], line=dict(color="#fff", width=1)),
             hovertext=hover, hoverinfo="text",
         ))
@@ -319,8 +405,8 @@ def recall_vs_depth(runs: list[Run], colors: dict[str, str], positions: dict[str
         return None
 
     fig.add_hline(
-        y=PASS_THRESHOLD / 20 * 100, line_dash="dash", line_color="#888",
-        annotation_text=f"pass threshold ({PASS_THRESHOLD}/20 = {PASS_THRESHOLD/20*100:.0f}%)",
+        y=PASS_PCT, line_dash="dash", line_color="#888",
+        annotation_text=f"pass threshold ({PASS_PCT:.0f}%)",
         annotation_position="bottom right",
     )
     fig.update_layout(
@@ -391,9 +477,11 @@ def write_chart_page(out_path: Path, group: str, slug: str, title: str, caption:
         for s, t in all_pages
     )
 
+    # Reference a local plotly.min.js (written once per corpus dir by
+    # write_dashboard) so charts render offline — no CDN dependency.
     chart_html = pio.to_html(
         fig,
-        include_plotlyjs="cdn",
+        include_plotlyjs="plotly.min.js",
         full_html=False,
         config={"responsive": True, "displaylogo": False},
     )
@@ -452,6 +540,13 @@ def write_dashboard(group: str, runs: list[Run], out_dir: Path) -> list[tuple[st
 
     chart_dir = out_dir / group
     chart_dir.mkdir(parents=True, exist_ok=True)
+
+    # Bundle plotly.js next to the pages so they work offline (~4MB, gitignored).
+    plotly_js = chart_dir / "plotly.min.js"
+    if not plotly_js.exists():
+        from plotly.offline import get_plotlyjs
+
+        plotly_js.write_text(get_plotlyjs())
 
     generated: list[tuple[str, str]] = []
     nav_pages: list[tuple[str, str]] = []

@@ -35,7 +35,8 @@ Open with:
 open analysis/charts/index.html
 ```
 
-Each chart page is fully self-contained (Plotly loaded from CDN). Pages share
+Each chart page is fully self-contained — `plotly.min.js` is written into each
+corpus folder, so the pages render offline with no CDN. Pages share
 a small horizontal nav at the top so you can jump between charts of the same
 corpus without going back to the index.
 

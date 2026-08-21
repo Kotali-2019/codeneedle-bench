@@ -46,8 +46,31 @@ def _resolve_source(args: argparse.Namespace):
 # --- extract -------------------------------------------------------------
 
 
+def _composition_line(kinds: list[str]) -> str:
+    """Summarize what the expected lines are made of.
+
+    Worth showing prominently: on docstring-heavy corpora most of a window can
+    be prose or blank, which changes what a score actually measures.
+    """
+    from collections import Counter
+
+    n = len(kinds)
+    if not n:
+        return "no lines"
+    c = Counter(kinds)
+    parts = [
+        f"{label} {c.get(key, 0)} ({c.get(key, 0) / n * 100:.0f}%)"
+        for key, label in (
+            ("code", "code"), ("blank", "blank"),
+            ("comment", "comment"), ("docstring", "docstring"),
+        )
+        if c.get(key, 0)
+    ]
+    return f"{n} expected lines: " + ", ".join(parts)
+
+
 def cmd_extract(args: argparse.Namespace) -> int:
-    from bench.extract import stratified_sample
+    from bench.extract import MIN_BODY_LINES, stratified_sample
 
     source, corpus = _resolve_source(args)
 
@@ -59,29 +82,50 @@ def cmd_extract(args: argparse.Namespace) -> int:
         loc = f"  ({match.source_path})" if match.source_path else ""
         print(f"# {match.name} — start_line={match.start_line}  body_lines={len(match.body_lines)}{loc}")
         print(f"# -- primary (first {len(match.primary_lines)}) --")
+        kinds = match.primary_kinds
         for i, l in enumerate(match.primary_lines, 1):
-            print(f"{i:>3}| {l}")
+            print(f"{i:>3}| {kinds[i-1][:4]:<4}| {l}")
+        print(f"# {_composition_line(match.primary_kinds)}")
         if match.bonus_lines:
             print(f"# -- bonus (next {len(match.bonus_lines)}) --")
             for i, l in enumerate(match.bonus_lines, len(match.primary_lines) + 1):
-                print(f"{i:>3}| {l}")
+                print(f"{i:>3}|     | {l}")
         return 0
 
     total_lines = source.text.count("\n") + 1
     print(
-        f"{len(source.targets)} function(s) with ≥20 body lines across "
+        f"{len(source.targets)} function(s) with ≥{MIN_BODY_LINES} body lines across "
         f"{len(source.files)} file(s) ({len(source.text):,} chars, {total_lines:,} lines)"
     )
+    all_kinds = [k for t in source.targets for k in t.primary_kinds]
+    print(f"scoreable composition — {_composition_line(all_kinds)}")
+
+    pool = source.targets
+    min_code = (
+        args.min_code_lines if args.min_code_lines is not None
+        else (corpus.min_code_lines if corpus else 0)
+    )
+    if min_code > 0:
+        pool = [t for t in pool if t.code_line_count >= min_code]
+        print(f"filtered to {len(pool)} target(s) with ≥{min_code} code line(s) "
+              f"({len(source.targets) - len(pool)} dropped)")
+    thin = [t for t in pool if t.code_line_count < 5]
+    if thin:
+        names = ", ".join(f"{t.name}({t.code_line_count})" for t in thin[:8])
+        more = f" +{len(thin)-8} more" if len(thin) > 8 else ""
+        print(f"⚠ {len(thin)} prose-dominated target(s) (<5 code lines): {names}{more}")
     k = args.k if args.k is not None else (corpus.sample_k if corpus else 16)
     seed = args.seed if args.seed is not None else (corpus.sample_seed if corpus else 42)
     if args.all:
-        chosen = source.targets
+        chosen = pool
     else:
-        chosen = stratified_sample(source.targets, total_lines, k=k, seed=seed)
+        chosen = stratified_sample(pool, total_lines, k=k, seed=seed)
         print(f"stratified sample of {len(chosen)}:")
     for t in chosen:
         loc = f"  ({t.source_path.name})" if t.source_path else ""
-        print(f"  {t.name:<40}  line={t.start_line:>6}  body_lines={len(t.body_lines)}{loc}")
+        print(f"  {t.name:<40}  line={t.start_line:>6}  "
+              f"body_lines={len(t.body_lines):<4} code_lines={t.code_line_count:>2}/"
+              f"{len(t.primary_lines)}{loc}")
     return 0
 
 
@@ -150,6 +194,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.strict_indent:
         relax_indent = False
 
+    # Scoring policy: corpus config supplies the default, CLI overrides it.
+    count_comments = corpus.count_comments if corpus is not None else True
+    if args.no_comments:
+        count_comments = False
+    if args.count_comments:
+        count_comments = True
+
     fn_filter = args.function if args.function else None
     scores = run_benchmark(
         source=source,
@@ -162,9 +213,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         skip_preflight=args.skip_preflight,
         fail_fast_after=None if args.no_fail_fast else args.fail_fast_after,
         relax_indent=relax_indent,
+        count_comments=count_comments,
+        corpus_name=corpus.name if corpus is not None else None,
+        notes=args.notes,
+        min_code_lines=(
+            args.min_code_lines if args.min_code_lines is not None
+            else (corpus.min_code_lines if corpus is not None else 0)
+        ),
+        model_label=model.label,
     )
-    passed = sum(1 for s in scores if s.passed)
-    return 0 if passed == len(scores) else 1
+    # Exit 0 means "the benchmark ran"; per-function FAILs are a normal result,
+    # not a tool error. Only a run that couldn't produce results exits non-zero.
+    errored = sum(1 for s in scores if s.error)
+    return 1 if not scores or errored == len(scores) else 0
 
 
 # --- rescore --------------------------------------------------------------
@@ -197,12 +258,27 @@ def cmd_rescore(args: argparse.Namespace) -> int:
                 "pass --corpus NAME or --file PATH to re-locate it"
             )
 
-    # Honor original dump's relax_indent unless overridden on the CLI.
-    relax_indent = bool(dump.get("relax_indent", False))
+    # Honor the original dump's scoring policy unless overridden on the CLI.
+    scoring = dump.get("scoring") or {}
+    relax_indent = bool(scoring.get("relax_indent", dump.get("relax_indent", False)))
     if args.relax_indent:
         relax_indent = True
     if args.strict_indent:
         relax_indent = False
+
+    count_comments = bool(scoring.get("count_comments", True))
+    if args.no_comments:
+        count_comments = False
+    if args.count_comments:
+        count_comments = True
+
+    if not dump.get("complete", True):
+        print(
+            f"⚠ this dump is INCOMPLETE ({dump.get('queries_run', '?')}/"
+            f"{dump.get('queries_planned', '?')} queries): "
+            f"{dump.get('aborted_reason')}",
+            file=sys.stderr,
+        )
 
     targets = {t.name: t for t in source.targets}
     scores = []
@@ -214,6 +290,8 @@ def cmd_rescore(args: argparse.Namespace) -> int:
         sc = score(
             t.name, t.primary_lines, t.bonus_lines,
             r.get("response", ""), relax_indent=relax_indent,
+            primary_kinds=t.primary_kinds, bonus_kinds=t.bonus_kinds,
+            count_comments=count_comments,
         )
         if r.get("error"):
             sc.error = r["error"]
@@ -221,6 +299,8 @@ def cmd_rescore(args: argparse.Namespace) -> int:
         print(render_function(sc))
     if relax_indent:
         print("\n(scored with relax_indent=true — leading whitespace ignored on both sides)")
+    if not count_comments:
+        print("(scored with --no-comments — only code lines earn credit)")
     print(render_summary(scores))
     return 0
 
@@ -241,6 +321,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_ex.add_argument("--seed", type=int, default=None, help="override corpus sample.seed")
     p_ex.add_argument("--all", action="store_true", help="list every extracted function, not a sample")
     p_ex.add_argument("--show", metavar="NAME", help="print expected primary+bonus lines for one function")
+    p_ex.add_argument(
+        "--min-code-lines", type=int, default=None, metavar="N",
+        help="preview the effect of filtering to functions with ≥N code lines",
+    )
     p_ex.set_defaults(func=cmd_extract)
 
     # --- run ----------------------------------------------------------------
@@ -253,7 +337,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="model config name (configs/models/<name>.toml), a path, or a raw model identifier",
     )
     p_run.add_argument("--base-url", default=None, help="overrides model config")
-    p_run.add_argument("--api-key", default=None)
+    p_run.add_argument(
+        "--api-key", default=None,
+        help="overrides model config (visible in shell history/ps — prefer "
+             "api_key_file or api_key_env in the model config for real keys)",
+    )
     p_run.add_argument("--temperature", type=float, default=None)
     p_run.add_argument("--max-tokens", type=int, default=None)
     p_run.add_argument("--timeout", type=float, default=None)
@@ -267,7 +355,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--think", action="store_true", help="allow chain-of-thought (default: suppress)")
     p_run.add_argument(
         "--skip-preflight", action="store_true",
-        help="skip the context-fit pre-flight probe (not recommended)",
+        help="skip the context-fit pre-flight probe (not recommended for local "
+             "servers; saves one full-prompt ingest on paid hosted APIs)",
     )
     p_run.add_argument(
         "--fail-fast-after", type=int, default=2, metavar="N",
@@ -285,6 +374,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict-indent", action="store_true",
         help="enforce verbatim indentation (overrides model config to false)",
     )
+    p_run.add_argument(
+        "--no-comments", action="store_true",
+        help="score only code lines; comments and docstrings earn no credit "
+             "(blank lines never do, either way)",
+    )
+    p_run.add_argument(
+        "--count-comments", action="store_true",
+        help="count comments/docstrings toward the score (the default; "
+             "overrides a corpus config that turned them off)",
+    )
+    p_run.add_argument(
+        "--min-code-lines", type=int, default=None, metavar="N",
+        help="only test functions with ≥N code lines in the primary window; "
+             "excludes docstring-dominated targets (overrides corpus config)",
+    )
+    p_run.add_argument(
+        "--notes", default=None, metavar="TEXT",
+        help="free-text runtime provenance recorded in the dump, e.g. "
+             "\"LM Studio 0.3.x, Q8 KV cache, 131072 ctx\"",
+    )
     p_run.set_defaults(func=cmd_run)
 
     # --- rescore ------------------------------------------------------------
@@ -300,6 +409,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_rs.add_argument(
         "--strict-indent", action="store_true",
         help="enforce verbatim indentation (overrides dump's setting)",
+    )
+    p_rs.add_argument(
+        "--no-comments", action="store_true",
+        help="score only code lines (overrides the dump's setting)",
+    )
+    p_rs.add_argument(
+        "--count-comments", action="store_true",
+        help="count comments/docstrings (overrides the dump's setting)",
     )
     p_rs.set_defaults(func=cmd_rescore)
 

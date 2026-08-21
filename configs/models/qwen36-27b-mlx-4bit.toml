@@ -1,0 +1,25 @@
+# Qwen3.6 27B — MLX 4-bit (Apple Silicon native).
+#
+# Pairs with qwen36-27b-mlx-8bit: SAME weights, SAME runtime, only the quant
+# differs. That's the controlled comparison the video calls for — it found
+# recall fidelity varies across quant builds, so this pair isolates that
+# variable rather than confounding it with a runtime change.
+#
+# Verified from `lms ls --json`: format=safetensors (MLX), quantization=4bit,
+# 27B params, 16.1 GB on disk.
+#   NOTE: the server-side id is the bare "qwen3.6-27b" while its 8-bit sibling
+#   is registered as "qwen3.6-27b-mlx". Those ids imply GGUF-vs-MLX, which is
+#   wrong — both are MLX. `label` below is what charts display.
+#
+# Same family as qwen36-35b, so the same reasoning-disable applies:
+# `prefill_no_think` is the working technique. With CoT skipped, 1500 tokens
+# is plenty for the 20-line task.
+
+name              = "qwen3.6-27b"          # id LM Studio knows it by
+label             = "qwen3.6-27b MLX 4bit" # display name used in charts
+base_url          = "http://localhost:1234"
+temperature       = 0.0
+max_tokens        = 1500
+timeout           = 600.0
+prefill_no_think  = true    # the only technique that reliably skips CoT on qwen3.6
+suppress_thinking = true    # appends /no_think; harmless when ignored

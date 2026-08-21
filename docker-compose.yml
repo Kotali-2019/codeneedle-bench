@@ -12,4 +12,9 @@ services:
     environment:
       - HISTSIZE=-1
       - HISTFILESIZE=-1
+    # Host networking lets the container reach a local LM Studio/llama.cpp
+    # server at localhost:1234. On Docker Desktop (macOS/Windows) it must be
+    # enabled first: Settings → Resources → Network → "Enable host networking".
+    # Alternatively, drop this line and point runs at the host gateway:
+    #   python bench.py run ... --base-url http://host.docker.internal:1234
     network_mode: host

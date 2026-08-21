@@ -7,9 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .client import ClientConfig, chat_complete
-from .extract import Source, extract, load_source_glob, stratified_sample
+from .extract import (
+    MIN_BODY_LINES, Source, extract, load_source_glob, stratified_sample,
+)
 from .report import render_function, render_summary
-from .scorer import FunctionScore, score
+from .scorer import PASS_RATIO, FunctionScore, score
+
+
+# Bumped when the dump layout changes in a way consumers must notice.
+# 2 = added completeness + provenance + code/prose breakdown.
+DUMP_SCHEMA_VERSION = 2
 
 
 # Keeping the file FIRST and the tiny task suffix LAST is deliberate:
@@ -81,7 +88,7 @@ def _build_prompt(target, text: str, multi_file: bool, suppress_thinking: bool) 
 
 
 def _preflight_context_check(prompt: str, cfg: ClientConfig) -> str | None:
-    """Send the actual prompt with max_tokens=1 to detect context-too-small.
+    """Send the actual prompt with a tiny max_tokens to detect context-too-small.
 
     Returns None on success, an error message string otherwise. Cheap because
     no real generation happens — the model only ingests the prompt and emits
@@ -123,6 +130,11 @@ def run_benchmark(
     skip_preflight: bool = False,
     fail_fast_after: int | None = 2,
     relax_indent: bool = False,
+    count_comments: bool = True,
+    corpus_name: str | None = None,
+    notes: str | None = None,
+    min_code_lines: int = 0,
+    model_label: str | None = None,
 ) -> list[FunctionScore]:
     text = source.text
     total_lines = text.count("\n") + 1
@@ -136,26 +148,64 @@ def run_benchmark(
         flush=True,
     )
 
+    pool = source.targets
+    if min_code_lines > 0:
+        pool = [t for t in pool if t.code_line_count >= min_code_lines]
+        dropped = len(source.targets) - len(pool)
+        print(
+            f"Filtered to {len(pool)} target(s) with ≥{min_code_lines} code line(s) "
+            f"in the primary window ({dropped} dropped)",
+            flush=True,
+        )
+
     if function_filter:
         wanted = {n for n in function_filter}
-        chosen = [t for t in source.targets if t.name in wanted]
+        chosen = [t for t in pool if t.name in wanted]
         missing = wanted - {t.name for t in chosen}
         if missing:
             print(f"WARNING: requested but not found: {sorted(missing)}", flush=True)
     else:
-        chosen = stratified_sample(source.targets, total_lines, k=k, seed=seed)
+        chosen = stratified_sample(pool, total_lines, k=k, seed=seed)
+
+    if not chosen:
+        if function_filter:
+            raise SystemExit(
+                "error: none of the requested --function names exist in this corpus "
+                "(see the WARNING above) — nothing to run"
+            )
+        raise SystemExit(
+            "error: the corpus has no named functions with ≥20 body lines — nothing to run"
+        )
 
     print(f"Selected {len(chosen)} target function(s):", flush=True)
+    thin = []
     for t in chosen:
         loc = f"  ({t.source_path.name})" if t.source_path else ""
+        n_code = t.code_line_count
         print(
-            f"  - {t.name}  line {t.start_line}  body_lines={len(t.body_lines)}{loc}",
+            f"  - {t.name}  line {t.start_line}  body_lines={len(t.body_lines)}  "
+            f"code_lines={n_code}/{len(t.primary_lines)}{loc}",
+            flush=True,
+        )
+        if n_code < 5:
+            thin.append((t.name, n_code))
+    if thin:
+        print(
+            f"\n  ⚠ {len(thin)} target(s) are mostly comments/blank lines — their score "
+            f"reflects prose recall more than code recall:",
+            flush=True,
+        )
+        for nm, n in thin:
+            print(f"      {nm} ({n} code line(s) of {MIN_BODY_LINES})", flush=True)
+        print(
+            "    Use --no-comments to score code only, or set "
+            "[sample] min_code_lines in the corpus config to exclude them.",
             flush=True,
         )
 
     multi_file = len(source.files) > 1
 
-    # Pre-flight: send the first real prompt with max_tokens=1 to check that
+    # Pre-flight: send the first real prompt with max_tokens=16 to check that
     # the loaded context is big enough. Misleading FAILs from context-too-small
     # are the easiest mistake to make with LM Studio (TTL-driven JIT reload at
     # default 4K context). Better to abort up front.
@@ -163,7 +213,7 @@ def run_benchmark(
         probe_prompt = _build_prompt(chosen[0], text, multi_file, suppress_thinking)
         print(
             f"\nPre-flight: probing context fit with a {len(probe_prompt):,}-char prompt "
-            f"(max_tokens=1)...",
+            f"(max_tokens=16)...",
             flush=True,
         )
         err = _preflight_context_check(probe_prompt, cfg)
@@ -187,6 +237,7 @@ def run_benchmark(
     scores: list[FunctionScore] = []
     runs: list[_Run] = []
     consecutive_errors = 0
+    aborted_reason: str | None = None
     for i, t in enumerate(chosen, 1):
         prompt = _build_prompt(t, text, multi_file, suppress_thinking)
         print(
@@ -220,7 +271,13 @@ def run_benchmark(
             )
             print(f"  ⚠ {score_error}", flush=True)
 
-        sc = score(t.name, t.primary_lines, t.bonus_lines, resp, relax_indent=relax_indent)
+        sc = score(
+            t.name, t.primary_lines, t.bonus_lines, resp,
+            relax_indent=relax_indent,
+            primary_kinds=t.primary_kinds,
+            bonus_kinds=t.bonus_kinds,
+            count_comments=count_comments,
+        )
         if score_error:
             sc.error = score_error
         scores.append(sc)
@@ -247,6 +304,10 @@ def run_benchmark(
             and i < len(chosen)
         ):
             remaining = len(chosen) - i
+            aborted_reason = (
+                f"fail-fast: {consecutive_errors} consecutive errors after "
+                f"{i}/{len(chosen)} queries"
+            )
             print(
                 f"\n⚠ {consecutive_errors} consecutive ERROR results — aborting the "
                 f"remaining {remaining} queries.",
@@ -274,17 +335,53 @@ def run_benchmark(
     if relax_indent:
         print("\n(scored with relax_indent=true — leading whitespace ignored on both sides)",
               flush=True)
+    if not count_comments:
+        print("(scored with --no-comments — only code lines earn credit)", flush=True)
     print(render_summary(scores), flush=True)
 
     if dump_path:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "schema_version": DUMP_SCHEMA_VERSION,
             "files": [str(p) for p in source.files],
+            "corpus": corpus_name,
+            "corpus_sha256": _sha256(source.text),
+            "corpus_chars": len(source.text),
+            # Completeness — a run that fail-fasted is NOT comparable to a full
+            # one. Consumers (charts, run-missing.py) must check this before
+            # treating the dump as a finished result.
+            "complete": aborted_reason is None,
+            "queries_planned": len(chosen),
+            "queries_run": len(scores),
+            "aborted_reason": aborted_reason,
+            # Request shape — everything that changes what the model saw.
             "model": cfg.model,
+            "model_label": model_label or cfg.model,
             "base_url": cfg.base_url,
             "temperature": cfg.temperature,
             "max_tokens": cfg.max_tokens,
-            "relax_indent": relax_indent,
+            "timeout": cfg.timeout,
+            "reasoning_effort": cfg.reasoning_effort,
+            "prefill_no_think": cfg.prefill_no_think,
+            "use_max_completion_tokens": cfg.use_max_completion_tokens,
+            "stop": cfg.stop,
+            "suppress_thinking": suppress_thinking,
+            # Sampling + scoring policy, so a dump can be reproduced exactly.
+            "sample_k": k,
+            "sample_seed": seed,
+            "function_filter": function_filter,
+            "min_code_lines": min_code_lines,
+            "scoring": {
+                "relax_indent": relax_indent,
+                "count_comments": count_comments,
+                "count_blank_lines": False,
+                "pass_ratio": PASS_RATIO,
+            },
+            # Server-side settings the API can't report (KV-cache quantization,
+            # loaded context length, runtime/quant build). Record them via
+            # `--notes` so published comparisons are auditable.
+            "runtime_notes": notes,
+            "relax_indent": relax_indent,   # legacy mirror for older readers
             "results": [
                 {
                     "function": sc.name,
@@ -293,6 +390,12 @@ def run_benchmark(
                     "error": sc.error,
                     "primary_matched": sc.primary_matched,
                     "primary_total": sc.primary_total,
+                    "code_matched": sc.code_matched,
+                    "code_total": sc.code_total,
+                    "prose_matched": sc.prose_matched,
+                    "prose_total": sc.prose_total,
+                    "blank_skipped": sc.blank_skipped,
+                    "raw_total": sc.raw_total,
                     "hallucinated": sc.hallucinated,
                     "bonus_matched": sc.bonus_matched,
                     "latency_s": r.latency_s,
@@ -304,8 +407,20 @@ def run_benchmark(
         }
         dump_path.write_text(json.dumps(payload, indent=2))
         print(f"\nResults dumped to {dump_path}", flush=True)
+        if aborted_reason:
+            print(
+                f"  ⚠ marked INCOMPLETE ({len(scores)}/{len(chosen)} queries) — "
+                f"charts will flag it and run-missing.py will re-run it.",
+                flush=True,
+            )
 
     return scores
+
+
+def _sha256(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def source_from_single_file(path: Path) -> Source:

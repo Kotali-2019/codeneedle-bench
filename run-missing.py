@@ -21,6 +21,7 @@ model is loaded exactly once, runs every needed corpus, then is unloaded.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -45,7 +46,11 @@ def pick_python() -> str:
 def is_local_server(base_url: str) -> bool:
     """True when base_url points at a localhost server (LM Studio, llama.cpp, Ollama)."""
     host = (urlparse(base_url).hostname or "").lower()
-    return host in {"localhost", "127.0.0.1", "0.0.0.0", ""}
+    if not host:
+        # A scheme-less base_url ("localhost:1234") parses hostless — retry
+        # with a network-location prefix so the hostname is recognized.
+        host = (urlparse(f"//{base_url}").hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0"}
 
 
 def lms(*args: str, capture: bool = False) -> tuple[int, str]:
@@ -75,6 +80,66 @@ def lms_unload(model_id: str) -> None:
     lms("unload", model_id)
 
 
+_EXPECTED_CACHE: dict[str, int | None] = {}
+
+
+def expected_queries(corpus_stem: str) -> int | None:
+    """How many queries a full run of this corpus produces (None if unknown).
+
+    Used to judge legacy dumps that predate the `complete` flag. Cached because
+    it parses the whole corpus.
+    """
+    if corpus_stem in _EXPECTED_CACHE:
+        return _EXPECTED_CACHE[corpus_stem]
+    try:
+        from bench.config import load_corpus
+        from bench.extract import load_source_glob, stratified_sample
+
+        c = load_corpus(corpus_stem)
+        src = load_source_glob(c.directory, c.glob, c.limit)
+        pool = src.targets
+        if c.min_code_lines > 0:
+            pool = [t for t in pool if t.code_line_count >= c.min_code_lines]
+        total_lines = src.text.count("\n") + 1
+        n = len(stratified_sample(pool, total_lines, k=c.sample_k, seed=c.sample_seed))
+    except Exception:
+        n = None
+    _EXPECTED_CACHE[corpus_stem] = n
+    return n
+
+
+def result_state(path: Path, corpus_stem: str | None = None) -> tuple[bool, str]:
+    """Classify an existing result file as (is_done, reason).
+
+    A dump that fail-fasted holds only a few of its planned queries. Treating
+    it as "done" silently freezes a broken run into the published charts, so
+    incomplete dumps are re-run instead.
+    """
+    if not path.is_file():
+        return False, "missing"
+    try:
+        data = json.loads(path.read_text())
+    except Exception as e:
+        return False, f"unreadable ({e})"
+    results = data.get("results")
+    if not results:
+        return False, "no results"
+    if "complete" in data:
+        if not data["complete"]:
+            ran = data.get("queries_run", len(results))
+            planned = data.get("queries_planned", "?")
+            return False, f"incomplete ({ran}/{planned} queries)"
+        return True, "complete"
+    # Legacy dump (schema_version < 2): no `complete` flag, so infer.
+    if all(r.get("error") for r in results):
+        return False, "legacy dump, every query errored"
+    if corpus_stem:
+        want = expected_queries(corpus_stem)
+        if want is not None and len(results) < want:
+            return False, f"legacy dump, only {len(results)}/{want} queries"
+    return True, "complete"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -83,6 +148,9 @@ def main() -> int:
                     help=f"context size for local models (default: {DEFAULT_CONTEXT})")
     ap.add_argument("--keep-loaded", action="store_true",
                     help="don't unload the last model when done")
+    ap.add_argument("--notes", default=None, metavar="TEXT",
+                    help="runtime provenance recorded in every dump, e.g. "
+                         "\"LM Studio 0.3.x, Q8 KV cache, 131072 ctx\"")
     args = ap.parse_args()
 
     from bench.config import load_model
@@ -100,25 +168,28 @@ def main() -> int:
     # Build a plan: per-model list of missing corpora. Skips models with nothing to do.
     plan: list[tuple[str, list[str]]] = []
     skipped = 0
+    reasons: dict[tuple[str, str], str] = {}
     for ms in model_stems:
         missing = []
         for cs in corpus_stems:
-            if (RESULTS_DIR / f"{cs}__{ms}.json").is_file():
+            done, reason = result_state(RESULTS_DIR / f"{cs}__{ms}.json", cs)
+            if done:
                 skipped += 1
             else:
                 missing.append(cs)
+                reasons[(cs, ms)] = reason
         if missing:
             plan.append((ms, missing))
 
     if not plan:
-        print("all combinations already have results — nothing to run.")
+        print("all combinations already have complete results — nothing to run.")
         return 0
 
-    print(f"already have results for {skipped} combinations.")
-    print("missing combinations:")
+    print(f"already have complete results for {skipped} combinations.")
+    print("combinations to run:")
     for ms, css in plan:
         for cs in css:
-            print(f"  - {cs} × {ms}")
+            print(f"  - {cs} × {ms}  [{reasons[(cs, ms)]}]")
     print()
 
     if args.dry_run:
@@ -163,13 +234,18 @@ def main() -> int:
         for corpus_stem in missing_corpora:
             print(f"\n===== {corpus_stem} × {model_stem} =====")
             result_path = RESULTS_DIR / f"{corpus_stem}__{model_stem}.json"
-            cmd = [python, "bench.py", "run", "--corpus", corpus_stem, "--model", model_stem]
-            r = subprocess.run(cmd)
-            if result_path.is_file():
+            cmd = [python, str(REPO_ROOT / "bench.py"), "run",
+                   "--corpus", corpus_stem, "--model", model_stem]
+            if args.notes:
+                cmd += ["--notes", args.notes]
+            r = subprocess.run(cmd, cwd=REPO_ROOT)
+            done, reason = result_state(result_path, corpus_stem)
+            if done:
                 new_count += 1
             else:
                 failed.append((corpus_stem, model_stem, r.returncode))
-                print(f"⚠ no result file produced (exit {r.returncode}); continuing", file=sys.stderr)
+                print(f"⚠ no complete result produced — {reason} (exit {r.returncode}); "
+                      f"continuing", file=sys.stderr)
 
     if current_loaded_id and not args.keep_loaded:
         print(f"\n--- unloading {current_loaded_id} ---")

@@ -1,0 +1,5 @@
+# Dev-only dependencies. Runtime deps live in requirements.txt.
+#   uv pip install -r requirements.txt -r requirements-dev.txt
+#   uv run pytest
+-r requirements.txt
+pytest>=8.0

@@ -38,14 +38,14 @@ seed = 42                # optional, default 42
 
 | field | required | meaning |
 |---|---|---|
-| `directory` | yes | path to look in. Relative paths resolve from the **current working directory** (project root if you run `bench.py` from there). Absolute paths work too. |
+| `directory` | yes | path to look in. Relative paths resolve from the **repo root** (same rule as `api_key_file`), with a fallback to the current working directory for configs written against the old behavior. Absolute paths work too. |
 | `glob` | yes | Python `pathlib` glob pattern. `*.js` is non-recursive; use `**/*.js` for recursive. |
 | `limit` | no | cap on how many matched files to include, after sorting matched paths lexically. Useful when a glob would otherwise pull in too many files. |
 
 If `glob` matches **more than one file**, the files are concatenated (sorted
 lexically) into a single combined corpus. A header is inserted between them
-(`# === path ===` for Python, `// === path ===` for JS) so the model sees file
-boundaries. Cross-file function-name collisions are de-duplicated — first
+(`# ====== path ======` for Python, `// ====== path ======` for JS) so the
+model sees file boundaries. Cross-file function-name collisions are de-duplicated — first
 occurrence wins, the rest are silently skipped. The prompt qualifies the
 target by file path so the model knows which one to reproduce.
 
@@ -60,6 +60,24 @@ Supported extensions: `.js`, `.mjs`, `.cjs` (esprima), `.py` (`ast`).
 |---|---|---|
 | `k` | 16 | how many functions to test per run. If the corpus has fewer than `k` functions with ≥ 20 body lines, all of them are tested. Selection is stratified by file position so you cover the whole file, not just the start. |
 | `seed` | 42 | RNG seed for the stratified sampler. Same seed + same corpus = same target functions across runs. Keep this fixed when comparing models so each model sees the same questions. |
+| `min_code_lines` | 0 | drop targets with fewer than N *code* lines in their 20-line window. `0` keeps everything. Raise it to exclude docstring-dominated functions — `http_server.log_message` has 1 code line in its window, so its score is almost entirely prose recall. Changing this changes which functions are tested, so re-run every model when you do. |
+
+### `[scoring]`
+
+| field | default | meaning |
+|---|---|---|
+| `count_comments` | `true` | whether comments and docstrings earn credit. They're genuine recall (prose can't be inferred from surrounding code), so they count by default — but every result reports the code-vs-prose split so you can see where a score came from. Set `false`, or pass `--no-comments`, to score code only. |
+
+**Blank lines never earn credit** and this isn't configurable. They were ~18% of
+every expected window, and reproducing whitespace demonstrates no recall. They
+remain part of the alignment (so a model that places them correctly stays in
+positional sync) but are excluded from both the numerator and the denominator.
+Because the denominator now varies, the pass threshold is a **ratio (0.4)** —
+identical to the original 8-of-20 on an all-code window.
+
+Scoring policy lives with the **corpus**, not the model: it defines what the
+questions are worth, and must be identical across models for a comparison to
+mean anything.
 
 ### Adding a new corpus
 
@@ -93,6 +111,7 @@ use_max_completion_tokens = true            # optional, OpenAI GPT-5+
 | field | required | default | meaning |
 |---|---|---|---|
 | `name` | yes | — | the model identifier the **server** knows it by (what `lms ls` shows or what `/v1/models` returns). Doesn't have to match the file's stem. |
+| `label` | no | falls back to `name` | display name used in charts. Server-side ids often misdescribe a build — LM Studio registers an MLX 4-bit as plain `qwen3.6-27b` and its 8-bit sibling as `qwen3.6-27b-mlx`, which reads like GGUF-vs-MLX when both are MLX. Set `label` so a quant comparison is labelled as one. Confirm what you actually have with `lms ls --json` (it reports `format` and `quantization`). |
 | `base_url` | no | `http://localhost:1234` | OpenAI-compatible endpoint root. Common ports: llama.cpp `8080`, LM Studio `1234`, Ollama `11434`. Hosted: `https://api.openai.com`. |
 | `api_key` | no | `not-needed` | bearer token (literal value). Use **only** for non-secret tokens like local-server placeholders. For real keys see *Hosted models* below. |
 | `api_key_file` | no | — | path to a file containing the key. Resolved relative to repo root if not absolute. **Use this for hosted-API keys** — see *Hosted models* below. Takes precedence over `api_key_env` and `api_key`. |
