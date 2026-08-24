@@ -14,6 +14,7 @@ class LineTag(str, Enum):
     MISSING = "missing"            # orange — expected (primary) line not produced
     HALLUCINATED = "hallucinated"  # yellow — produced but not in expected window
     BONUS = "bonus"                # blue — produced, correct, past the primary 20
+    REINDENTED = "reindented"      # cyan — right content, different leading whitespace
 
 
 @dataclass
@@ -30,9 +31,15 @@ class FunctionScore:
     hallucinated: int
     bonus_matched: int
     passed: bool
-    expected_tagged: list[LineResult]    # expected primary side (matched/missing)
-    predicted_tagged: list[LineResult]   # model output side (matched/halluc/bonus)
+    expected_tagged: list[LineResult]    # expected primary side (matched/missing/reindented)
+    predicted_tagged: list[LineResult]   # model output side (matched/halluc/bonus/reindented)
     error: str | None = None             # request errored or returned no usable content; renderers should show ERROR instead of FAIL so it isn't confused with a real recall miss
+    # A line the model reproduced correctly but indented differently is not a
+    # hallucination — it is a formatting difference. Counting it as one both
+    # mislabels it and penalizes it twice (the expected line also goes
+    # MISSING). Tracked separately so the headline number means what it says.
+    reindented: int = 0
+    spacing_deviation: bool = False      # True when any line differs only in whitespace
 
 
 def score(
@@ -77,10 +84,39 @@ def score(
             matched_exp[ei] = True
             pred_kind[pi] = 0 if ei < len(exp_primary) else 1
 
+    # Whitespace-only differences are not hallucinations. Under strict scoring
+    # a re-indented line fails to align, so it lands in the unmatched bucket on
+    # BOTH sides — the expected line reads MISSING and the emitted line reads
+    # HALLUCINATED, for what is a single formatting difference. Pair those two
+    # back up and label them for what they are.
+    #
+    # Only meaningful in strict mode: with relax_indent the lines already
+    # aligned, so nothing is left over to pair.
+    reindented_exp: set[int] = set()
+    if not relax_indent:
+        unmatched_exp: dict[str, list[int]] = {}
+        for i in range(len(exp_full)):
+            if matched_exp[i]:
+                continue
+            key = exp_full[i].strip()
+            if key:
+                unmatched_exp.setdefault(key, []).append(i)
+        for pi, kind in enumerate(pred_kind):
+            if kind != -1:
+                continue
+            key = pred[pi].strip()
+            candidates = unmatched_exp.get(key)
+            if not candidates:
+                continue
+            ei = candidates.pop(0)          # consume, so it pairs at most once
+            reindented_exp.add(ei)
+            pred_kind[pi] = 2
+
     primary_matched = sum(1 for i in range(len(exp_primary)) if matched_exp[i])
     bonus_matched = sum(
         1 for i in range(len(exp_primary), len(exp_full)) if matched_exp[i]
     )
+    reindented = sum(1 for k in pred_kind if k == 2)
     hallucinated = sum(1 for k in pred_kind if k == -1)
 
     # Blank lines shouldn't count as hallucinations (models often insert them).
@@ -100,16 +136,20 @@ def score(
         # both started from the same _clean_output and stripped trailing blanks.
         pred_display = pred_display[: len(pred)] + [""] * max(0, len(pred) - len(pred_display))
 
-    expected_tagged = [
-        LineResult(
-            LineTag.MATCHED if matched_exp[i] else LineTag.MISSING,
-            expected_display[i],
-        )
-        for i in range(len(exp_primary))
-    ]
+    expected_tagged = []
+    for i in range(len(exp_primary)):
+        if matched_exp[i]:
+            tag = LineTag.MATCHED
+        elif i in reindented_exp:
+            tag = LineTag.REINDENTED
+        else:
+            tag = LineTag.MISSING
+        expected_tagged.append(LineResult(tag, expected_display[i]))
+
     kind_to_tag = {
         0: LineTag.MATCHED,
         1: LineTag.BONUS,
+        2: LineTag.REINDENTED,
         -1: LineTag.HALLUCINATED,
     }
     predicted_tagged = [
@@ -122,9 +162,15 @@ def score(
         primary_total=len(exp_primary),
         hallucinated=hallucinated,
         bonus_matched=bonus_matched,
+        # Strict scoring still means verbatim: a re-indented line is NOT a
+        # match, so pass/fail verdicts and matched counts are unchanged and
+        # remain comparable with earlier runs. Use --relax-indent to score
+        # these as matches.
         passed=primary_matched >= PASS_THRESHOLD,
         expected_tagged=expected_tagged,
         predicted_tagged=predicted_tagged,
+        reindented=reindented,
+        spacing_deviation=reindented > 0,
     )
 
 
