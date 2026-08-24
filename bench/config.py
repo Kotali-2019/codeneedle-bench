@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .client import ClientConfig
+from .textio import read_text
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -101,7 +102,7 @@ def _resolve_path(name_or_path: str | Path, search_dir: Path) -> Path:
 
 def load_corpus(name_or_path: str | Path) -> CorpusConfig:
     path = _resolve_path(name_or_path, CORPORA_DIR)
-    raw = tomllib.loads(path.read_text())
+    raw = tomllib.loads(read_text(path))
 
     files_raw = raw.get("files") or {}
     if "directory" not in files_raw or "glob" not in files_raw:
@@ -152,7 +153,7 @@ def _resolve_api_key(raw: dict, config_path: Path) -> str:
             raise FileNotFoundError(
                 f"{config_path}: api_key_file '{key_path}' not found"
             )
-        return key_path.read_text().strip()
+        return read_text(key_path).strip()
     if "api_key_env" in raw:
         env_name = raw["api_key_env"]
         val = os.environ.get(env_name)
@@ -165,7 +166,7 @@ def _resolve_api_key(raw: dict, config_path: Path) -> str:
 
 
 def load_model_from_file(path: Path) -> ModelConfig:
-    raw = tomllib.loads(path.read_text())
+    raw = tomllib.loads(read_text(path))
     if "name" not in raw:
         raise ValueError(f"{path}: required field `name` (model identifier) is missing")
     stop_raw = raw.get("stop")

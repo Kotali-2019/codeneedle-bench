@@ -30,6 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))   # so `import bench…` works regardless of cwd
 
 from bench.scorer import PASS_RATIO  # noqa: E402 — needs the sys.path insert above
+from bench.textio import read_text, write_text, use_utf8_stdio  # noqa: E402
 
 PASS_PCT = PASS_RATIO * 100
 LEGEND_ROW_PX = 26    # how much vertical space each legend entry needs
@@ -102,7 +103,7 @@ def _label_from_config(result_path: Path) -> str | None:
         cfg = REPO_ROOT / "configs" / "models" / f"{model_stem}.toml"
         if not cfg.is_file():
             return None
-        return tomllib.loads(cfg.read_text()).get("label")
+        return tomllib.loads(read_text(cfg)).get("label")
     except Exception:
         return None
 
@@ -111,7 +112,7 @@ def load_runs(results_dir: Path) -> dict[str, list[Run]]:
     groups: dict[str, list[Run]] = defaultdict(list)
     for p in sorted(results_dir.glob("*.json")):
         try:
-            data = json.loads(p.read_text())
+            data = json.loads(read_text(p))
         except Exception as e:
             print(f"skip {p.name}: {e}", file=sys.stderr)
             continue
@@ -496,7 +497,8 @@ def write_chart_page(out_path: Path, group: str, slug: str, title: str, caption:
         f'<div class="chart">{chart_html}</div>'
         f'</div>'
     )
-    out_path.write_text(
+    write_text(
+        out_path,
         f'<!doctype html><html><head><meta charset="utf-8">'
         f'<title>{group} · {title}</title>'
         f'<style>{PAGE_CSS}</style></head><body>{body}</body></html>'
@@ -520,7 +522,8 @@ def write_corpus_index(out_path: Path, group: str, runs: list[Run],
         f'<ul>{items}</ul>'
         f'</div>'
     )
-    out_path.write_text(
+    write_text(
+        out_path,
         f'<!doctype html><html><head><meta charset="utf-8">'
         f'<title>{group} · charts</title>'
         f'<style>{PAGE_CSS}</style></head><body>{body}</body></html>'
@@ -546,7 +549,7 @@ def write_dashboard(group: str, runs: list[Run], out_dir: Path) -> list[tuple[st
     if not plotly_js.exists():
         from plotly.offline import get_plotlyjs
 
-        plotly_js.write_text(get_plotlyjs())
+        write_text(plotly_js, get_plotlyjs())
 
     generated: list[tuple[str, str]] = []
     nav_pages: list[tuple[str, str]] = []
@@ -582,7 +585,8 @@ def write_top_index(groups: dict[str, list[Run]], out_dir: Path) -> Path:
         f'<ul>{"".join(items)}</ul>'
         f'</div>'
     )
-    idx.write_text(
+    write_text(
+        idx,
         f'<!doctype html><html><head><meta charset="utf-8">'
         f'<title>codeneedle dashboards</title>'
         f'<style>{PAGE_CSS}</style></head><body>{body}</body></html>'
@@ -597,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--output-dir", type=Path, default=None,
                     help="default: analysis/charts/")
     args = ap.parse_args(argv)
+    use_utf8_stdio()
 
     out_dir = args.output_dir or (REPO_ROOT / "analysis" / "charts")
     groups = load_runs(args.results_dir)

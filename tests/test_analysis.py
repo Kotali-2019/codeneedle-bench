@@ -5,6 +5,7 @@ import importlib.util
 import json
 
 import pytest
+from bench.textio import read_text, write_text
 
 
 @pytest.fixture(scope="module")
@@ -38,20 +39,20 @@ def test_missing_file_is_not_done(rm, tmp_path):
 
 def test_unreadable_file_is_not_done(rm, tmp_path):
     p = tmp_path / "bad.json"
-    p.write_text("{not json")
+    write_text(p, "{not json")
     done, why = rm.result_state(p)
     assert not done and "unreadable" in why
 
 
 def test_complete_flag_true_is_done(rm, tmp_path):
     p = tmp_path / "d.json"
-    p.write_text(json.dumps(_dump(complete=True)))
+    write_text(p, json.dumps(_dump(complete=True)))
     assert rm.result_state(p) == (True, "complete")
 
 
 def test_complete_flag_false_is_not_done(rm, tmp_path):
     p = tmp_path / "d.json"
-    p.write_text(json.dumps(_dump(complete=False, queries_run=4,
+    write_text(p, json.dumps(_dump(complete=False, queries_run=4,
                                   queries_planned=16)))
     done, why = rm.result_state(p)
     assert not done and "4/16" in why
@@ -59,7 +60,7 @@ def test_complete_flag_false_is_not_done(rm, tmp_path):
 
 def test_legacy_dump_all_errored_is_not_done(rm, tmp_path):
     p = tmp_path / "d.json"
-    p.write_text(json.dumps(_dump(results=[
+    write_text(p, json.dumps(_dump(results=[
         {"function": "a", "error": "HTTP 400", "passed": False},
         {"function": "b", "error": "HTTP 400", "passed": False},
     ])))
@@ -70,7 +71,7 @@ def test_legacy_dump_all_errored_is_not_done(rm, tmp_path):
 def test_legacy_short_dump_detected_against_corpus(rm, tmp_path):
     """The real bug: a 4-of-16 legacy dump was treated as finished."""
     p = tmp_path / "d.json"
-    p.write_text(json.dumps(_dump(results=[
+    write_text(p, json.dumps(_dump(results=[
         {"function": f"f{i}", "error": None, "passed": True} for i in range(4)
     ])))
     done, why = rm.result_state(p, "jquery")
@@ -80,7 +81,7 @@ def test_legacy_short_dump_detected_against_corpus(rm, tmp_path):
 
 def test_legacy_full_dump_is_done(rm, tmp_path):
     p = tmp_path / "d.json"
-    p.write_text(json.dumps(_dump(results=[
+    write_text(p, json.dumps(_dump(results=[
         {"function": f"f{i}", "error": None, "passed": True} for i in range(11)
     ])))
     assert rm.result_state(p, "http_server")[0] is True
@@ -142,7 +143,7 @@ def _run(viz, tmp_path, name, n, total_per=10, matched_per=5, **over):
     }
     data.update(over)
     p = tmp_path / f"jquery__{name}.json"
-    p.write_text(json.dumps(data))
+    write_text(p, json.dumps(data))
     return p
 
 
@@ -211,7 +212,7 @@ def test_charts_have_no_cdn_reference(viz, tmp_path, repo_root):
     out = tmp_path / "charts"
     groups = viz.load_runs(tmp_path)
     viz.write_dashboard("jquery", groups["jquery"], out)
-    page = (out / "jquery" / "leaderboard.html").read_text()
+    page = read_text(out / "jquery" / "leaderboard.html")
     assert "cdn.plot.ly" not in page, "charts must render offline"
     assert 'src="plotly.min.js"' in page
     assert (out / "jquery" / "plotly.min.js").is_file()

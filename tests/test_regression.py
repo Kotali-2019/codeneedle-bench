@@ -12,6 +12,7 @@ import pytest
 
 from bench.extract import KIND_BLANK, KIND_CODE, PROSE_KINDS
 from bench.scorer import score
+from bench.textio import read_text, write_text
 
 
 # --- corpus composition ---------------------------------------------------
@@ -78,7 +79,7 @@ def test_stored_results_contained_real_blank_inflation(repo_root, py_source,
     }
     old = new = 0
     for p in _stored(repo_root):
-        d = json.loads(p.read_text())
+        d = json.loads(read_text(p))
         corpus = pathlib.Path(p).stem.split("__")[0]
         if corpus not in by_corpus:
             continue
@@ -109,7 +110,7 @@ def test_rescoring_is_deterministic(repo_root, py_source):
     runs = []
     for _ in range(2):
         total = 0
-        for r in json.loads(p.read_text())["results"]:
+        for r in json.loads(read_text(p))["results"]:
             t = by.get(r["function"])
             if t is None:
                 continue
@@ -130,7 +131,7 @@ def test_every_model_config_loads(repo_root):
     configs = sorted((repo_root / "configs" / "models").glob("*.toml"))
     assert configs
     for c in configs:
-        if "api_key_file" in c.read_text() and not (
+        if "api_key_file" in read_text(c) and not (
             repo_root / ".secrets"
         ).exists():
             continue  # hosted config needs a key file we may not have
@@ -143,8 +144,8 @@ def test_quant_pair_configs_are_distinctly_labelled(repo_root):
     import tomllib
 
     d = repo_root / "configs" / "models"
-    four = tomllib.loads((d / "qwen36-27b-mlx-4bit.toml").read_text())
-    eight = tomllib.loads((d / "qwen36-27b-mlx-8bit.toml").read_text())
+    four = tomllib.loads(read_text(d / "qwen36-27b-mlx-4bit.toml"))
+    eight = tomllib.loads(read_text(d / "qwen36-27b-mlx-8bit.toml"))
     assert four["label"] != eight["label"]
     assert "4bit" in four["label"] and "8bit" in eight["label"]
     # Server-side ids stay whatever LM Studio registered.

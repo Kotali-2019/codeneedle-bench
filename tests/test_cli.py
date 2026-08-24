@@ -5,6 +5,7 @@ import json
 import subprocess
 
 import pytest
+from bench.textio import read_text, write_text
 
 
 def run_cli(python_bin, repo_root, *args, cwd=None):
@@ -109,7 +110,7 @@ def test_rescore_matches_stored_scores(python_bin, repo_root, sample_dump):
     r = run_cli(python_bin, repo_root, "rescore", str(sample_dump),
                 "--corpus", "http_server")
     assert r.returncode == 0, r.stderr
-    stored = json.loads(sample_dump.read_text())["results"]
+    stored = json.loads(read_text(sample_dump))["results"]
     want = sum(1 for x in stored if x.get("passed"))
     assert f"Pass:                  {want}/11" in r.stdout
 
@@ -140,12 +141,12 @@ def test_rescore_denominator_excludes_blanks(python_bin, repo_root, sample_dump)
 
 def test_rescore_warns_on_incomplete_dump(python_bin, repo_root, tmp_path,
                                           sample_dump):
-    d = json.loads(sample_dump.read_text())
+    d = json.loads(read_text(sample_dump))
     d["complete"] = False
     d["queries_run"], d["queries_planned"] = 3, 11
     d["aborted_reason"] = "fail-fast: synthetic"
     p = tmp_path / "partial.json"
-    p.write_text(json.dumps(d))
+    write_text(p, json.dumps(d))
     r = run_cli(python_bin, repo_root, "rescore", str(p), "--corpus", "http_server")
     assert "INCOMPLETE" in r.stderr
 

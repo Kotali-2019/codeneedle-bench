@@ -11,6 +11,7 @@ from .extract import (
     MIN_BODY_LINES, Source, extract, load_source_glob, stratified_sample,
 )
 from .report import render_function, render_summary
+from .textio import read_text, write_text
 from .scorer import PASS_RATIO, FunctionScore, score
 
 
@@ -405,7 +406,7 @@ def run_benchmark(
                 for sc, r in zip(scores, runs)
             ],
         }
-        dump_path.write_text(json.dumps(payload, indent=2))
+        write_text(dump_path, json.dumps(payload, indent=2))
         print(f"\nResults dumped to {dump_path}", flush=True)
         if aborted_reason:
             print(
@@ -426,6 +427,6 @@ def _sha256(text: str) -> str:
 def source_from_single_file(path: Path) -> Source:
     """Convenience: build a Source from one file (for backwards-compat with the file CLI)."""
     targets = extract(path)
-    text = path.read_text()
+    text = read_text(path)
     from .extract import language_of
     return Source(files=[path], text=text, targets=targets, language=language_of(path))

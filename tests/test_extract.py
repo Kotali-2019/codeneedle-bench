@@ -1,12 +1,11 @@
 """Extractor: ground truth, line classification, multi-file offsets."""
 from __future__ import annotations
 
-import textwrap
-
 from bench.extract import (
     KIND_BLANK, KIND_CODE, KIND_COMMENT, KIND_DOCSTRING,
     extract, line_kinds, load_source_glob, stratified_sample,
 )
+from bench.textio import read_text, write_text
 
 
 # --- ground truth ---------------------------------------------------------
@@ -139,8 +138,8 @@ def _fn(name: str, n: int = 25) -> str:
 
 def test_multifile_offsets_land_on_real_lines(tmp_path):
     """Both shipped corpora are single-file, so this path is otherwise untested."""
-    (tmp_path / "a_mod.py").write_text(_fn("alpha") + "\n" + _fn("beta"))
-    (tmp_path / "b_mod.py").write_text(_fn("gamma"))
+    write_text(tmp_path / "a_mod.py", _fn("alpha") + "\n" + _fn("beta"))
+    write_text(tmp_path / "b_mod.py", _fn("gamma"))
 
     src = load_source_glob(tmp_path, "*.py", None)
     names = {t.name for t in src.targets}
@@ -155,15 +154,15 @@ def test_multifile_offsets_land_on_real_lines(tmp_path):
 
 
 def test_multifile_headers_present(tmp_path):
-    (tmp_path / "a_mod.py").write_text(_fn("alpha"))
-    (tmp_path / "b_mod.py").write_text(_fn("gamma"))
+    write_text(tmp_path / "a_mod.py", _fn("alpha"))
+    write_text(tmp_path / "b_mod.py", _fn("gamma"))
     src = load_source_glob(tmp_path, "*.py", None)
     assert src.text.count("# ====== ") == 2, "one header per file"
 
 
 def test_multifile_name_collision_deduped(tmp_path):
-    (tmp_path / "a_mod.py").write_text(_fn("same"))
-    (tmp_path / "b_mod.py").write_text(_fn("same"))
+    write_text(tmp_path / "a_mod.py", _fn("same"))
+    write_text(tmp_path / "b_mod.py", _fn("same"))
     src = load_source_glob(tmp_path, "*.py", None)
     assert [t.name for t in src.targets] == ["same"], "first occurrence wins"
 
@@ -171,8 +170,8 @@ def test_multifile_name_collision_deduped(tmp_path):
 def test_mixed_languages_rejected(tmp_path):
     import pytest
 
-    (tmp_path / "a.py").write_text(_fn("alpha"))
-    (tmp_path / "b.js").write_text("function g(){\n" + "\n".join(
+    write_text(tmp_path / "a.py", _fn("alpha"))
+    write_text(tmp_path / "b.js", "function g(){\n" + "\n".join(
         f"  var v{i} = {i};" for i in range(25)) + "\n}\n")
     with pytest.raises(ValueError, match="mixed languages"):
         load_source_glob(tmp_path, "*.*", None)

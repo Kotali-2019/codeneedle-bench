@@ -355,6 +355,22 @@ For fair comparison matching the video:
 
 Keep temperature at 0. Default `max_tokens=6000` to leave room for reasoning models.
 
+### Windows / encoding
+
+All files are read and written as UTF-8 explicitly, and `stdout`/`stderr` are
+reconfigured to UTF-8 at startup. Without that, Python falls back to the locale
+encoding — cp1252 on most Windows installs — which can't represent the `←` in
+the chart navigation, the `≥`/`⚠`/`✓` in the console report, or the CJK
+characters inside the bundled `plotly.min.js`. Symptoms this prevents:
+
+```
+UnicodeEncodeError: 'charmap' codec can't encode character '←'
+```
+
+Piping output to a file (`python bench.py run … > run.log`) is covered too —
+that's the case where Windows drops to the locale encoding even though an
+interactive console would have coped.
+
 ### LM Studio gotchas we hit (read before debugging)
 
 1. **`lms ps` lies about context size after JIT loads.** If large prompts fail
