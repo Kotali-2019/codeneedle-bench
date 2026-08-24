@@ -342,6 +342,34 @@ python3 bench.py run --corpus jquery --model qwen36-35b \
     --notes "LM Studio 0.3.x, Q8 KV cache, 131072 ctx, Unsloth Q4_K_XL"
 ```
 
+### Indentation: "hallucination" vs. re-indentation
+
+A line the model reproduced correctly but indented differently is **not** a
+hallucination. It is reported separately:
+
+```
+=== val  [PASS]  matched=19/20  hallucinated=0  reindented=1  bonus=0 ===
+  -- reproduced, but re-indented (not hallucinations) --
+                  var hooks, ret, valueIsFunction,
+```
+
+Scoring is unchanged: strict matching means *verbatim*, so a re-indented line
+still counts as a miss and pass/fail verdicts stay comparable with earlier
+runs. What changed is the label — such a line no longer inflates the
+`hallucinated` count, and it is no longer penalized twice (once as a missing
+expected line, once as a hallucinated emitted line).
+
+If you care about content rather than exact whitespace, score by content:
+
+```
+python3 bench.py run --corpus jquery --model <model> --relax-indent
+python3 bench.py rescore results/jquery__<model>.json --corpus jquery --relax-indent
+```
+
+or set `relax_indent = true` in the model config. The summary tells you when
+this would make a difference. Models that normalize indentation (Gemma 4, for
+one) can otherwise look far worse than they are.
+
 ## Server setup notes
 
 For fair comparison matching the video:

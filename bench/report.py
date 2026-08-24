@@ -17,6 +17,7 @@ COLOR = {
     LineTag.HALLUCINATED: "\x1b[33m",   # yellow
     LineTag.BONUS: "\x1b[36m",          # cyan (blue-ish)
     LineTag.IGNORED: "\x1b[2;37m",      # dim — correct but earns no credit
+    LineTag.REINDENTED: "\x1b[38;5;117m",  # light blue — content right, spacing differs
 }
 RESET = "\x1b[0m"
 BOLD = "\x1b[1m"
@@ -67,7 +68,8 @@ def render_function(score: FunctionScore, color: bool | None = None) -> str:
         f"matched={score.primary_matched}/{score.primary_total} "
         f"({score.ratio*100:.0f}%)  "
         f"hallucinated={score.hallucinated}  "
-        f"bonus={score.bonus_matched} ==="
+        + (f"reindented={score.reindented}  " if score.reindented else "")
+        + f"bonus={score.bonus_matched} ==="
     )
     out = [header, f"  {_composition(score)}", "  -- model output --"]
     for r in score.predicted_tagged:
@@ -77,6 +79,12 @@ def render_function(score: FunctionScore, color: bool | None = None) -> str:
     if missing:
         out.append("  -- missing expected lines --")
         for r in missing:
+            out.append("  " + _colorize(color, COLOR[r.tag], r.text))
+
+    reindented = [r for r in score.expected_tagged if r.tag == LineTag.REINDENTED]
+    if reindented:
+        out.append("  -- reproduced, but re-indented (not hallucinations) --")
+        for r in reindented:
             out.append("  " + _colorize(color, COLOR[r.tag], r.text))
     return "\n".join(out)
 
@@ -96,6 +104,7 @@ def render_summary(scores: list[FunctionScore], color: bool | None = None) -> st
     prose_m = sum(s.prose_matched for s in real)
     prose_t = sum(s.prose_total for s in real)
     blanks = sum(s.blank_skipped for s in real)
+    total_reindent = sum(s.reindented for s in real)
     pct = f"{total_matched / total_possible * 100:.0f}%" if total_possible else "n/a"
 
     lines = [
@@ -115,6 +124,18 @@ def render_summary(scores: list[FunctionScore], color: bool | None = None) -> st
         f"  Hallucinated lines:    {total_halluc}",
         f"  Bonus (extra correct): {total_bonus}",
     ]
+    if total_reindent:
+        affected = sum(1 for s in real if s.spacing_deviation)
+        lines.append(
+            f"  Re-indented lines:     {total_reindent}"
+            f"  (content correct, spacing differs — not hallucinations)"
+        )
+        lines.append(
+            f"    \u21b3 {affected} function(s) affected; scored as misses under strict"
+        )
+        lines.append(
+            "      matching. Re-run with --relax-indent to score by content."
+        )
 
     # Per-function one-liner
     lines.append("")
@@ -131,5 +152,6 @@ def render_summary(scores: list[FunctionScore], color: bool | None = None) -> st
                 f"({s.ratio*100:>3.0f}%)  "
                 f"code={s.code_matched:>2}/{s.code_total:<2}  "
                 f"halluc={s.hallucinated:>2}  bonus={s.bonus_matched:>2}"
+                + (f"  reindent={s.reindented:>2}" if s.reindented else "")
             )
     return "\n".join(lines)

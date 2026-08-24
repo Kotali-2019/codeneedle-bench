@@ -177,9 +177,29 @@ def test_rescore_summary_markers_survive_cp1252(python_bin, repo_root, tmp_path)
 
 
 def test_visualize_survives_cp1252(python_bin, repo_root, tmp_path):
-    """The exact command from issue #10."""
+    """The exact command from issue #10.
+
+    Supplies its own `--results-dir`: `results/*.json` is gitignored, so a
+    fresh clone has none and visualize.py would correctly report nothing to
+    do. Relying on whatever the developer happens to have run locally would
+    make this pass or fail by accident.
+    """
+    results = tmp_path / "results"
+    results.mkdir()
+    write_text(results / "jquery__demo.json", json.dumps({
+        "files": [str(repo_root / "fixtures" / "jquery.js")],
+        "model": "demo",
+        "results": [
+            {"function": f"fn{i}", "passed": True, "error": None,
+             "primary_matched": 18, "primary_total": 20,
+             "hallucinated": 0, "bonus_matched": 0}
+            for i in range(3)
+        ],
+    }))
+
     r = subprocess.run(
         [python_bin, str(repo_root / "analysis" / "visualize.py"),
+         "--results-dir", str(results),
          "--output-dir", str(tmp_path / "charts")],
         capture_output=True, cwd=repo_root, env=_cp1252_env(), timeout=300,
     )

@@ -22,6 +22,7 @@ class LineTag(str, Enum):
     HALLUCINATED = "hallucinated"  # yellow — produced but not in expected window
     BONUS = "bonus"                # blue — produced, correct, past the primary 20
     IGNORED = "ignored"            # dim — correct, but not eligible for credit
+    REINDENTED = "reindented"      # cyan — right content, different leading whitespace
 
 
 @dataclass
@@ -46,6 +47,11 @@ class FunctionScore:
     code_total: int = 0
     prose_matched: int = 0
     prose_total: int = 0
+    # A line reproduced correctly but indented differently is not a
+    # hallucination (issue #4) — tracked separately so the headline number
+    # means what it says.
+    reindented: int = 0
+    spacing_deviation: bool = False      # True when any line differs only in whitespace
     blank_skipped: int = 0               # expected primary lines excluded as blank
     prose_skipped: int = 0               # expected primary lines excluded as comment/docstring
     raw_total: int = 0                   # every expected primary line, eligible or not
@@ -113,7 +119,8 @@ def score(
     sm = SequenceMatcher(a=exp_full, b=pred, autojunk=False)
 
     matched_exp = [False] * len(exp_full)
-    # -1 = hallucinated, 0 = primary match, 1 = bonus match, 2 = matched-but-ineligible
+    # -1 = hallucinated, 0 = primary match, 1 = bonus match,
+    #  2 = matched-but-ineligible, 3 = right content, wrong indentation
     pred_kind = [-1] * len(pred)
 
     for block in sm.get_matching_blocks():
@@ -130,7 +137,37 @@ def score(
             else:
                 pred_kind[pi] = 0 if ei < len(exp_primary) else 1
 
+    # Whitespace-only differences are not hallucinations (issue #4). Under
+    # strict matching a re-indented line fails to align, so it lands unmatched
+    # on BOTH sides — MISSING expected, HALLUCINATED emitted — for one
+    # formatting difference. Pair those back up. Only meaningful in strict
+    # mode: with relax_indent they already aligned.
+    reindented_exp: set[int] = set()
+    if not relax_indent:
+        leftover: dict[str, list[int]] = {}
+        for i in range(len(exp_full)):
+            if matched_exp[i]:
+                continue
+            key = exp_full[i].strip()
+            if key:
+                leftover.setdefault(key, []).append(i)
+        for pi, kind in enumerate(pred_kind):
+            if kind != -1:
+                continue
+            candidates = leftover.get(pred[pi].strip())
+            if not candidates:
+                continue
+            ei = candidates.pop(0)          # consume: pairs at most once
+            if eligible_full[ei]:
+                reindented_exp.add(ei)
+                pred_kind[pi] = 3
+            else:
+                # Right content on a line that earns no credit anyway — still
+                # not a hallucination.
+                pred_kind[pi] = 2
+
     n_primary = len(exp_primary)
+    reindented = sum(1 for k in pred_kind if k == 3)
     primary_total = sum(1 for i in range(n_primary) if eligible_full[i])
     primary_matched = sum(
         1 for i in range(n_primary) if eligible_full[i] and matched_exp[i]
@@ -174,6 +211,8 @@ def score(
             tag = LineTag.IGNORED
         elif matched_exp[i]:
             tag = LineTag.MATCHED
+        elif i in reindented_exp:
+            tag = LineTag.REINDENTED
         else:
             tag = LineTag.MISSING
         expected_tagged.append(LineResult(tag, expected_display[i]))
@@ -182,6 +221,7 @@ def score(
         0: LineTag.MATCHED,
         1: LineTag.BONUS,
         2: LineTag.IGNORED,
+        3: LineTag.REINDENTED,
         -1: LineTag.HALLUCINATED,
     }
     predicted_tagged = [
@@ -203,6 +243,8 @@ def score(
         prose_total=prose_total,
         blank_skipped=blank_skipped,
         prose_skipped=prose_skipped,
+        reindented=reindented,
+        spacing_deviation=reindented > 0,
         raw_total=n_primary,
     )
 
