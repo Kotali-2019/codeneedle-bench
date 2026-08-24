@@ -53,7 +53,10 @@ def lms(*args: str, capture: bool = False) -> tuple[int, str]:
     cmd = ["lms", *args]
     print(f"  $ {' '.join(cmd)}", flush=True)
     if capture:
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        # Decode explicitly: `text=True` alone would use the locale encoding,
+        # which mangles or raises on non-ASCII `lms` output under Windows.
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     r = subprocess.run(cmd)
     return r.returncode, ""
@@ -76,6 +79,9 @@ def lms_unload(model_id: str) -> None:
 
 
 def main() -> int:
+    from bench.textio import use_utf8_stdio
+
+    use_utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="list what would run, don't execute")

@@ -179,7 +179,9 @@ def cmd_rescore(args: argparse.Namespace) -> int:
     from bench.runner import source_from_single_file
     from bench.scorer import score
 
-    dump = json.loads(Path(args.dump).read_text())
+    from bench.textio import read_text
+
+    dump = json.loads(read_text(args.dump))
     if args.corpus:
         from bench.config import load_corpus
 
@@ -307,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Before anything prints: the report uses ≥, ✓ and ✗, none of which survive
+    # a locale-encoded stream when output is redirected on Windows.
+    from bench.textio import use_utf8_stdio
+
+    use_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

@@ -5,6 +5,8 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+from .textio import read_text
+
 
 MIN_BODY_LINES = 20
 BONUS_CAP = 40  # extra lines past the primary 20 that count toward the "blue" bonus
@@ -52,7 +54,7 @@ def language_of(path: Path) -> str:
 
 
 def extract(path: Path) -> list[FunctionTarget]:
-    source = path.read_text()
+    source = read_text(path)
     lang = language_of(path)
     if lang == "js":
         targets = _extract_js(source)
@@ -95,7 +97,7 @@ def load_source_glob(
     line_offset = 0
 
     for p in paths:
-        text = p.read_text()
+        text = read_text(p)
         header = _file_header(lang, p)
         parts.append(header)
         parts.append(text)
