@@ -342,6 +342,43 @@ python3 bench.py run --corpus jquery --model qwen36-35b \
     --notes "LM Studio 0.3.x, Q8 KV cache, 131072 ctx, Unsloth Q4_K_XL"
 ```
 
+### How a target is identified in the prompt
+
+The prompt quotes the target's **own signature text**, copied verbatim from the
+corpus:
+
+```
+Task: reproduce verbatim the first 20 lines of the body of the function named `val` ...
+
+It is the function introduced by exactly this text:
+
+    	val: function( value ) {
+
+Output the 20 lines that come immediately after it.
+```
+
+Earlier versions instead told the model to look for `function <name>(`. That
+text does not exist for property- or assignment-style definitions — 5 of the 16
+sampled jQuery targets (`PSEUDO`, `init`, `then`, `val`, `parseHTML`) are
+written as `val: function( value ) {` or `jQuery.parseHTML = function(...)`, so
+the model was pointed at a string the file never contains. Across the stored
+runs those five averaged **59%** against **79%** for the rest — a gap present in
+every model tested, and not explained by their depth in the file. The benchmark
+was measuring a defect in its own question.
+
+**Unanswerable targets are excluded.** If a signature is not unique in the file,
+no prompt could single that definition out, so the target is dropped from
+sampling and the exclusion is printed:
+
+```
+excluded 4 unanswerable target(s) — duplicate name AND identical signature: ID, get, setup, sortOrder
+```
+
+jQuery declares 11 eligible names more than once; quoting the signature
+disambiguates 10 of them, because the signatures differ even where the names do
+not (`PSEUDO: function( match )` vs `PSEUDO: function( pseudo, argument )`).
+Only the genuinely identical ones are dropped.
+
 ### Indentation: "hallucination" vs. re-indentation
 
 A line the model reproduced correctly but indented differently is **not** a
