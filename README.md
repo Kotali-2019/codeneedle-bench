@@ -291,6 +291,30 @@ For fair comparison matching the video:
 
 Keep temperature at 0. Default `max_tokens=6000` to leave room for reasoning models.
 
+### Windows / encoding
+
+All files are read and written as UTF-8 explicitly, and `stdout`/`stderr` are
+reconfigured to UTF-8 at startup. Without that, Python falls back to the locale
+encoding — cp1252 on most Windows installs — which cannot represent the `←` in
+the chart navigation or the `≥`/`✓`/`✗` in the console report:
+
+```
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2190'
+```
+
+Piping output to a file (`python bench.py run … > run.log`) is covered too —
+that is the case where Windows drops to the locale encoding even though an
+interactive console would have coped.
+
+### Tests
+
+```
+uv pip install -r requirements-dev.txt
+uv run pytest
+```
+
+`smoke_test.py` remains available as a dependency-free alternative.
+
 ### LM Studio gotchas we hit (read before debugging)
 
 1. **`lms ps` lies about context size after JIT loads.** If large prompts fail

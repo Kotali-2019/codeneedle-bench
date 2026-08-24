@@ -9,6 +9,7 @@ from pathlib import Path
 from .client import ClientConfig, chat_complete
 from .extract import Source, extract, load_source_glob, stratified_sample
 from .report import render_function, render_summary
+from .textio import read_text, write_text
 from .scorer import FunctionScore, score
 
 
@@ -302,7 +303,7 @@ def run_benchmark(
                 for sc, r in zip(scores, runs)
             ],
         }
-        dump_path.write_text(json.dumps(payload, indent=2))
+        write_text(dump_path, json.dumps(payload, indent=2))
         print(f"\nResults dumped to {dump_path}", flush=True)
 
     return scores
@@ -311,6 +312,6 @@ def run_benchmark(
 def source_from_single_file(path: Path) -> Source:
     """Convenience: build a Source from one file (for backwards-compat with the file CLI)."""
     targets = extract(path)
-    text = path.read_text()
+    text = read_text(path)
     from .extract import language_of
     return Source(files=[path], text=text, targets=targets, language=language_of(path))
