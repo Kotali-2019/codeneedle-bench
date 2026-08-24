@@ -140,7 +140,40 @@ def test_extract_survives_redirected_cp1252_stdout(python_bin, repo_root, tmp_pa
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-800:]
     text = out.read_bytes().decode("utf-8")
     assert "≥20 body lines" in text, "non-ASCII output must survive redirection"
-    assert "⚠" in text
+    assert "⚠" in text, "the prose-target warning must survive too"
+
+
+def test_rescore_summary_markers_survive_cp1252(python_bin, repo_root, tmp_path):
+    """The per-function summary prints ✓/✗, which cp1252 cannot encode.
+
+    Driven through `bench.py rescore` — a real entry point that needs no model,
+    only a prior dump.
+    """
+    from bench.extract import extract
+
+    target = next(t for t in extract(repo_root / "fixtures" / "http_server.py")
+                  if t.name == "is_cgi")
+    dump = tmp_path / "dump.json"
+    write_text(dump, json.dumps({
+        "files": [str(repo_root / "fixtures" / "http_server.py")],
+        "model": "test",
+        "results": [
+            {"function": "is_cgi", "response": "\n".join(target.primary_lines)},
+            {"function": "translate_path", "response": "nothing like the truth"},
+        ],
+    }))
+
+    out = tmp_path / "summary.log"
+    with out.open("wb") as fh:
+        r = subprocess.run(
+            [python_bin, str(repo_root / "bench.py"), "rescore", str(dump),
+             "--file", str(repo_root / "fixtures" / "http_server.py")],
+            stdout=fh, stderr=subprocess.PIPE, cwd=repo_root,
+            env=_cp1252_env(), timeout=180,
+        )
+    assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-800:]
+    text = out.read_bytes().decode("utf-8")
+    assert "✓" in text and "✗" in text, "pass/fail markers must survive redirection"
 
 
 def test_visualize_survives_cp1252(python_bin, repo_root, tmp_path):
@@ -163,7 +196,10 @@ def test_visualize_survives_cp1252(python_bin, repo_root, tmp_path):
 
 
 def test_bundled_plotly_js_written_intact(python_bin, repo_root, tmp_path):
-    """plotly.min.js contains CJK; writing it under cp1252 used to abort."""
+    """plotly.min.js contains CJK; writing it under cp1252 used to abort.
+
+    Specific to this branch — it is what bundles plotly for offline charts.
+    """
     subprocess.run(
         [python_bin, str(repo_root / "analysis" / "visualize.py"),
          "--output-dir", str(tmp_path / "charts")],
@@ -173,7 +209,7 @@ def test_bundled_plotly_js_written_intact(python_bin, repo_root, tmp_path):
     from plotly.offline import get_plotlyjs
 
     written = next((tmp_path / "charts").rglob("plotly.min.js"))
-    assert written.read_text(encoding="utf-8") == get_plotlyjs()
+    assert read_text(written) == get_plotlyjs()
 
 
 def test_run_missing_survives_cp1252(python_bin, repo_root, tmp_path):
@@ -213,7 +249,32 @@ def test_dump_with_non_ascii_response_roundtrips(tmp_path):
     assert json.loads(read_text(p))["results"][0]["response"] == "héllo ⚠ 日本語 ←"
 
 
+def test_model_config_with_non_ascii_content(tmp_path):
+    """TOML is UTF-8 by spec; reading it at the locale encoding corrupts it."""
+    from bench.config import load_model_from_file
+
+    write_text(tmp_path / "m.toml",
+               '# Qwen3.6 · 27B — bf16 ✓\nname = "qwen3.6-27b"\n'
+               'api_key = "clé-secrète"\n')
+    cfg = load_model_from_file(tmp_path / "m.toml")
+    assert cfg.client.model == "qwen3.6-27b"
+    assert cfg.client.api_key == "clé-secrète"
+
+
+def test_api_key_file_with_trailing_newline_and_unicode(tmp_path, monkeypatch):
+    """Keys are read from disk; that read must not depend on the locale."""
+    import bench.config as config
+
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    write_text(tmp_path / "k.key", "sk-café-123\n")
+    write_text(tmp_path / "m.toml",
+               'name = "x"\napi_key_file = "k.key"\n')
+    cfg = config.load_model_from_file(tmp_path / "m.toml")
+    assert cfg.client.api_key == "sk-café-123"
+
+
 def test_model_config_with_non_ascii_label(tmp_path):
+    """The `label` field is displayed in charts, so it must round-trip."""
     from bench.config import load_model_from_file
 
     write_text(tmp_path / "m.toml",
