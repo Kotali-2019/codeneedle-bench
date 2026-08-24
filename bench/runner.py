@@ -24,36 +24,44 @@ DUMP_SCHEMA_VERSION = 2
 # llama.cpp / LM Studio / Ollama all reuse the KV cache for common prefix tokens,
 # so across the 16 queries only the tail re-processes. Move the file and the
 # cache is invalidated every request.
+# The anchor is the target's OWN signature text, quoted verbatim from the
+# corpus. The previous wording told the model to look for `function <name>(`,
+# which does not exist for property- or assignment-style definitions — 5 of the
+# 16 sampled jQuery targets (`PSEUDO`, `init`, `then`, `val`, `parseHTML`) are
+# defined as `val: function( value ) {` or `jQuery.parseHTML = function(...)`.
+# Across the stored runs those five averaged 59% against 79% for the rest, a
+# ~20-point gap present in every model and not explained by depth in the file.
+# That was the prompt measuring its own defect. Quoting the real signature also
+# disambiguates 10 of the 11 duplicated names in jQuery, since their signatures
+# differ even where their names do not.
 PROMPT_TEMPLATE = (
     "{file_contents}\n"
     "\n"
     "---\n"
     "\n"
     "Task: reproduce verbatim the first {n} lines of the body of the function named "
-    "`{name}`{file_qualifier} from the source above — i.e., the {n} lines {anchor_phrase}.\n"
+    "`{name}`{file_qualifier} from the source above.\n"
+    "\n"
+    "It is the function introduced by exactly this text:\n"
+    "\n"
+    "{signature_block}\n"
+    "\n"
+    "Output the {n} lines that come immediately after it.\n"
     "\n"
     "Rules:\n"
     "- Output ONLY those lines, one per line, in original order.\n"
     "- Preserve original indentation and characters exactly.\n"
-    "- Do NOT output the function signature or the line containing `{signature_marker}`.\n"
+    "- Do NOT output the signature text shown above.\n"
     "- Do NOT add commentary, line numbers, or markdown code fences.\n"
     "- If there are blank lines in the body, include them as blank lines.\n"
     "{thinking_suffix}"
 )
-# Per-language anchor phrasing — the source has no opening brace in Python,
-# so saying "following the opening brace" confuses the model and produces
-# off-by-N-line drift (emits the signature line, emits class-attr lines before
-# the def, etc.). Pin the anchor to a marker the language actually has.
-ANCHOR_PHRASE = {
-    "js": "starting immediately after the line containing `function {name}(` "
-          "or the assignment that introduces it (the line with the opening "
-          "brace `{{`)",
-    "py": "starting with the first body line after the `def {name}(...):` "
-          "signature (including the docstring if present)",
-}
-SIGNATURE_MARKER = {
-    "js": "function {name}(",
-    "py": "def {name}(",
+# Fallback for targets extracted before signature capture existed (or by a
+# caller that builds FunctionTarget by hand).
+LEGACY_ANCHOR = {
+    "js": "the line containing `function {name}(` or the assignment that "
+          "introduces it (the line with the opening brace `{{`)",
+    "py": "the `def {name}(...):` signature line",
 }
 # Qwen3 (and other reasoning-enabled models) treat `/no_think` as a directive
 # to skip chain-of-thought. Ignored by non-reasoning models. For a pure recall
@@ -71,9 +79,16 @@ class _Run:
     error: str | None = None
 
 
+def _signature_block(target) -> str:
+    """The quoted definition text, indented so it reads as a block."""
+    sig = getattr(target, "signature_text", None)
+    if not sig:
+        # Nothing captured — fall back to describing the anchor in prose.
+        return "    " + LEGACY_ANCHOR[target.language].format(name=target.name)
+    return "\n".join("    " + l for l in sig.splitlines())
+
+
 def _build_prompt(target, text: str, multi_file: bool, suppress_thinking: bool) -> str:
-    anchor = ANCHOR_PHRASE[target.language].format(name=target.name)
-    sig_marker = SIGNATURE_MARKER[target.language].format(name=target.name)
     file_qualifier = (
         f" in file `{target.source_path}`" if multi_file and target.source_path else ""
     )
@@ -82,8 +97,7 @@ def _build_prompt(target, text: str, multi_file: bool, suppress_thinking: bool) 
         name=target.name,
         file_qualifier=file_qualifier,
         n=len(target.primary_lines),
-        anchor_phrase=anchor,
-        signature_marker=sig_marker,
+        signature_block=_signature_block(target),
         thinking_suffix=NO_THINK_SUFFIX if suppress_thinking else "",
     )
 
@@ -150,9 +164,24 @@ def run_benchmark(
     )
 
     pool = source.targets
+
+    # A target whose name AND signature are shared with another definition
+    # cannot be identified by any prompt, so asking about it is an unanswerable
+    # question that scores near zero however good the model is. Drop those.
+    unanswerable = [t for t in pool if t.ambiguous]
+    if unanswerable:
+        pool = [t for t in pool if not t.ambiguous]
+        print(
+            f"Excluded {len(unanswerable)} target(s) with a duplicate name AND "
+            f"identical signature (no prompt could disambiguate): "
+            f"{', '.join(sorted(t.name for t in unanswerable))}",
+            flush=True,
+        )
+
     if min_code_lines > 0:
+        before = len(pool)
         pool = [t for t in pool if t.code_line_count >= min_code_lines]
-        dropped = len(source.targets) - len(pool)
+        dropped = before - len(pool)
         print(
             f"Filtered to {len(pool)} target(s) with ≥{min_code_lines} code line(s) "
             f"in the primary window ({dropped} dropped)",

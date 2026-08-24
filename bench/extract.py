@@ -31,6 +31,15 @@ class FunctionTarget:
     language: str = "js"      # "js" or "py" — controls the prompt wording
     source_path: Path | None = None  # which file this came from (for multi-file corpora)
     body_kinds: list[str] | None = None  # parallel to body_lines; one KIND_* per line
+    # The definition's own source text, from where it starts through the line
+    # that opens the body. The prompt quotes this instead of guessing at
+    # `function <name>(` — 5 of 16 sampled jQuery targets are property or
+    # assignment style, for which that guess names text the file never contains.
+    signature_text: str | None = None
+    # True when another definition shares BOTH this name and this exact
+    # signature, so no prompt could distinguish them. Such targets are
+    # unanswerable and get excluded from sampling.
+    ambiguous: bool = False
 
     @property
     def primary_lines(self) -> list[str]:
@@ -271,6 +280,21 @@ def _file_header(lang: str, path: Path) -> str:
 # --- JavaScript ---------------------------------------------------------------
 
 
+def _block_occurrences(lines: list[str], block: str) -> int:
+    """How many times `block` appears as consecutive whole lines in `lines`.
+
+    Ambiguity has to be judged against the WHOLE file, not just the functions
+    long enough to be targets: the model sees every definition. `send_head` in
+    http_server.py is declared twice with an identical signature, but only one
+    body is long enough to be extracted — the prompt is still ambiguous.
+    """
+    needle = block.splitlines()
+    if not needle:
+        return 0
+    n = len(needle)
+    return sum(1 for i in range(len(lines) - n + 1) if lines[i:i + n] == needle)
+
+
 def _extract_js(source: str) -> list[FunctionTarget]:
     import esprima
 
@@ -286,10 +310,12 @@ def _extract_js(source: str) -> list[FunctionTarget]:
     lines = source.splitlines()
     targets: list[FunctionTarget] = []
     seen: set[str] = set()
+    # Every eligible definition's signature, keyed by name — including ones
+    # skipped as duplicates. Used afterwards to tell a name that merely repeats
+    # (disambiguated by its signature) from one that is genuinely ambiguous.
+    signatures: dict[str, list[str]] = {}
 
-    def emit(name: str, block) -> None:
-        if name in seen:
-            return
+    def emit(name: str, node, block) -> None:
         brace_line = block.loc.start.line  # line of '{'
         close_line = block.loc.end.line    # line of '}'
         if close_line - brace_line < MIN_BODY_LINES + 1:
@@ -298,12 +324,22 @@ def _extract_js(source: str) -> list[FunctionTarget]:
         body = lines[brace_line:close_line - 1]
         if len(body) < MIN_BODY_LINES:
             return
+
+        # The signature spans from where the definition starts through the
+        # line carrying the opening brace, so the body begins on the very next
+        # line. Quoting the whole span keeps multi-line signatures correct.
+        signature = "\n".join(lines[node.loc.start.line - 1:brace_line])
+        signatures.setdefault(name, []).append(signature)
+
+        if name in seen:
+            return
         seen.add(name)
         targets.append(
             FunctionTarget(
                 name=name,
                 start_line=brace_line + 1,
                 body_lines=body,
+                signature_text=signature,
             )
         )
 
@@ -343,7 +379,7 @@ def _extract_js(source: str) -> list[FunctionTarget]:
             nm = (node.id.name if getattr(node, "id", None) else None) or name_hint
             body = getattr(node, "body", None)
             if nm and body is not None and body.type == "BlockStatement":
-                emit(nm, body)
+                emit(nm, node, body)
         elif t == "FunctionExpression":
             nm = (
                 (node.id.name if getattr(node, "id", None) else None)
@@ -351,11 +387,11 @@ def _extract_js(source: str) -> list[FunctionTarget]:
             )
             body = getattr(node, "body", None)
             if nm and body is not None and body.type == "BlockStatement":
-                emit(nm, body)
+                emit(nm, node, body)
         elif t == "ArrowFunctionExpression":
             body = getattr(node, "body", None)
             if name_hint and body is not None and body.type == "BlockStatement":
-                emit(name_hint, body)
+                emit(name_hint, node, body)
 
         # recurse
         for key, val in vars(node).items():
@@ -369,6 +405,10 @@ def _extract_js(source: str) -> list[FunctionTarget]:
                 walk(val, hint_for(t, key, node))
 
     walk(tree)
+    for t in targets:
+        # Ambiguous when the quoted signature is not unique in the file, so no
+        # prompt built from it could single this definition out.
+        t.ambiguous = _block_occurrences(lines, t.signature_text or "") > 1
     return targets
 
 
@@ -383,20 +423,35 @@ def _extract_py(source: str) -> list[FunctionTarget]:
     targets: list[FunctionTarget] = []
     seen: set[str] = set()
 
+    signatures: dict[str, list[str]] = {}
+
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if node.name in seen or not node.body:
+        if not node.body:
             continue
         start = node.body[0].lineno
         end = max(getattr(n, "end_lineno", n.lineno) for n in node.body)
         body = lines[start - 1:end]
         if len(body) < MIN_BODY_LINES:
             continue
+
+        # `node.lineno` is the `def` line (decorators sit above it and are not
+        # part of the signature). The span runs to the line before the body,
+        # so multi-line signatures are quoted whole.
+        signature = "\n".join(lines[node.lineno - 1:start - 1])
+        signatures.setdefault(node.name, []).append(signature)
+
+        if node.name in seen:
+            continue
         seen.add(node.name)
         targets.append(
-            FunctionTarget(name=node.name, start_line=start, body_lines=body)
+            FunctionTarget(name=node.name, start_line=start, body_lines=body,
+                           signature_text=signature)
         )
+
+    for t in targets:
+        t.ambiguous = _block_occurrences(lines, t.signature_text or "") > 1
     return targets
 
 

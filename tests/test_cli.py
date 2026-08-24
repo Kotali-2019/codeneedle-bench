@@ -75,8 +75,9 @@ def test_extract_warns_about_prose_targets(python_bin, repo_root):
 def test_extract_min_code_lines_filters_and_feeds_sampling(python_bin, repo_root):
     r = run_cli(python_bin, repo_root, "extract", "--corpus", "http_server",
                 "--min-code-lines", "5")
-    assert "filtered to 8 target(s)" in r.stdout
-    assert "stratified sample of 8" in r.stdout
+    # 11 eligible, minus send_head (unanswerable), minus 3 prose-dominated.
+    assert "filtered to 7 target(s)" in r.stdout
+    assert "stratified sample of 7" in r.stdout
     assert "log_message" not in r.stdout.split("stratified sample")[1]
 
 

@@ -62,6 +62,15 @@ def mock_server(py_source):
     srv.shutdown()
 
 
+def _answerable(source) -> int:
+    """Targets a full run plans: eligible minus the unanswerable ones.
+
+    Derived rather than hardcoded — excluding ambiguous targets (a name whose
+    signature is not unique in the file) legitimately changes the count.
+    """
+    return len([t for t in source.targets if not t.ambiguous])
+
+
 def _cfg(srv) -> ClientConfig:
     host, port = srv.server_address
     return ClientConfig(base_url=f"http://{host}:{port}", model="mock", timeout=20)
@@ -77,7 +86,7 @@ def test_perfect_model_passes_everything(mock_server, py_source, tmp_path, capsy
         source=py_source, cfg=_cfg(srv), k=16, seed=42, dump_path=dump,
         skip_preflight=True, corpus_name="http_server",
     )
-    assert len(scores) == 11
+    assert len(scores) == _answerable(py_source)
     assert all(s.passed for s in scores)
     assert all(s.error is None for s in scores)
     assert all(s.hallucinated == 0 for s in scores)
@@ -95,7 +104,7 @@ def test_dump_records_full_provenance(mock_server, py_source, tmp_path):
 
     assert d["schema_version"] == DUMP_SCHEMA_VERSION
     assert d["complete"] is True
-    assert d["queries_run"] == d["queries_planned"] == 11
+    assert d["queries_run"] == d["queries_planned"] == _answerable(py_source)
     assert d["aborted_reason"] is None
     assert d["corpus"] == "http_server"
     assert len(d["corpus_sha256"]) == 16
@@ -194,7 +203,8 @@ def test_fail_fast_marks_dump_incomplete(mock_server, py_source, tmp_path):
     d = json.loads(read_text(dump))
     assert len(scores) == 2, "aborted after 2 consecutive errors"
     assert d["complete"] is False
-    assert d["queries_run"] == 2 and d["queries_planned"] == 11
+    assert d["queries_run"] == 2
+    assert d["queries_planned"] == _answerable(py_source)
     assert "fail-fast" in d["aborted_reason"]
 
 
@@ -205,7 +215,7 @@ def test_no_fail_fast_runs_every_query(mock_server, py_source, tmp_path):
     scores = run_benchmark(source=py_source, cfg=_cfg(srv), dump_path=dump,
                            skip_preflight=True, fail_fast_after=None,
                            corpus_name="http_server")
-    assert len(scores) == 11
+    assert len(scores) == _answerable(py_source)
     assert json.loads(read_text(dump))["complete"] is True, \
         "running every query is a complete run, even if all errored"
 

@@ -101,14 +101,23 @@ def cmd_extract(args: argparse.Namespace) -> int:
     print(f"scoreable composition — {_composition_line(all_kinds)}")
 
     pool = source.targets
+    # Mirror the runner: an ambiguous target is never tested, so `extract`
+    # must not advertise it either.
+    unanswerable = sorted(t.name for t in pool if t.ambiguous)
+    if unanswerable:
+        pool = [t for t in pool if not t.ambiguous]
+        print(f"excluded {len(unanswerable)} unanswerable target(s) — duplicate name "
+              f"AND identical signature: {', '.join(unanswerable)}")
+
     min_code = (
         args.min_code_lines if args.min_code_lines is not None
         else (corpus.min_code_lines if corpus else 0)
     )
     if min_code > 0:
+        before = len(pool)
         pool = [t for t in pool if t.code_line_count >= min_code]
         print(f"filtered to {len(pool)} target(s) with ≥{min_code} code line(s) "
-              f"({len(source.targets) - len(pool)} dropped)")
+              f"({before - len(pool)} dropped)")
     thin = [t for t in pool if t.code_line_count < 5]
     if thin:
         names = ", ".join(f"{t.name}({t.code_line_count})" for t in thin[:8])
