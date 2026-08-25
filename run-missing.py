@@ -129,6 +129,10 @@ def result_state(path: Path, corpus_stem: str | None = None) -> tuple[bool, str]
     results = data.get("results")
     if not results:
         return False, "no results"
+    if data.get("in_progress"):
+        ran = data.get("queries_run", len(results))
+        planned = data.get("queries_planned", "?")
+        return False, f"still running ({ran}/{planned} queries so far)"
     if "complete" in data:
         if not data["complete"]:
             ran = data.get("queries_run", len(results))

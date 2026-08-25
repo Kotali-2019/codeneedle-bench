@@ -329,6 +329,14 @@ re-runs it instead of treating the file's existence as success. The leaderboard
 plots **percentages**, not raw line counts, so a run with a smaller denominator
 isn't misread as a worse model.
 
+### Crash safety
+
+The results dump is rewritten after **every** query, atomically, so a crash,
+an OOM kill or a Ctrl-C costs you only the query in flight rather than the
+whole run — which on an 80K-token corpus can be half an hour of inference. A
+dump written mid-run carries `"in_progress": true`; `run-missing.py` re-runs
+it and the charts flag it, so a partial run is never mistaken for a result.
+
 ### Run provenance
 
 Each dump records the full request shape (model, temperature, token budget,

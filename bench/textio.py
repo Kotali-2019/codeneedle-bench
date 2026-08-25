@@ -32,6 +32,22 @@ def write_text(path: Path | str, data: str) -> int:
     return Path(path).write_text(data, encoding=ENCODING)
 
 
+def write_text_atomic(path: Path | str, data: str) -> None:
+    """Write a UTF-8 text file so readers never observe a partial one.
+
+    Writes a sibling temp file and renames it over the target: `os.replace` is
+    atomic within a filesystem. Needed because the results dump is rewritten
+    after every query, so a crash mid-write would otherwise leave truncated
+    JSON where a valid earlier dump used to be.
+    """
+    import os
+
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(data, encoding=ENCODING)
+    os.replace(tmp, path)
+
+
 def use_utf8_stdio() -> None:
     """Make stdout/stderr UTF-8 so non-ASCII output survives redirection.
 

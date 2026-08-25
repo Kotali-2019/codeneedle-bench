@@ -65,6 +65,8 @@ class Run:
         same corpus group — a run with fewer queries than its peers was cut
         short, and must not be charted as if it were a full result.
         """
+        if self.data.get("in_progress"):
+            return False
         if "complete" in self.data:
             return bool(self.data["complete"])
         return self.group_max == 0 or self.n_queries >= self.group_max

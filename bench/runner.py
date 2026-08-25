@@ -11,7 +11,7 @@ from .extract import (
     MIN_BODY_LINES, Source, extract, load_source_glob, stratified_sample,
 )
 from .report import render_function, render_summary
-from .textio import read_text, write_text
+from .textio import read_text, write_text, write_text_atomic
 from .scorer import PASS_RATIO, FunctionScore, score
 
 
@@ -268,6 +268,85 @@ def run_benchmark(
     runs: list[_Run] = []
     consecutive_errors = 0
     aborted_reason: str | None = None
+
+    # Checkpoint after every query. The dump used to be written once, after
+    # the loop, so a crash, an OOM or a Ctrl-C discarded the entire run — on an
+    # 80K-token corpus that is potentially half an hour of inference. Written
+    # atomically, and flagged `in_progress` until the loop finishes, so a dump
+    # found mid-run is never mistaken for a finished one.
+    def _write_dump(in_progress: bool) -> None:
+        if not dump_path:
+            return
+        dump_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+        "schema_version": DUMP_SCHEMA_VERSION,
+        "files": [str(p) for p in source.files],
+        "corpus": corpus_name,
+        "corpus_sha256": _sha256(source.text),
+        "corpus_chars": len(source.text),
+        # Completeness — a run that fail-fasted is NOT comparable to a full
+        # one. Consumers (charts, run-missing.py) must check this before
+        # treating the dump as a finished result.
+        "complete": aborted_reason is None,
+        "queries_planned": len(chosen),
+        "queries_run": len(scores),
+        "aborted_reason": aborted_reason,
+        # Request shape — everything that changes what the model saw.
+        "model": cfg.model,
+        "model_label": model_label or cfg.model,
+        "base_url": cfg.base_url,
+        "temperature": cfg.temperature,
+        "max_tokens": cfg.max_tokens,
+        "timeout": cfg.timeout,
+        "reasoning_effort": cfg.reasoning_effort,
+        "prefill_no_think": cfg.prefill_no_think,
+        "use_max_completion_tokens": cfg.use_max_completion_tokens,
+        "stop": cfg.stop,
+        "suppress_thinking": suppress_thinking,
+        # Sampling + scoring policy, so a dump can be reproduced exactly.
+        "sample_k": k,
+        "sample_seed": seed,
+        "function_filter": function_filter,
+        "min_code_lines": min_code_lines,
+        "scoring": {
+            "relax_indent": relax_indent,
+            "count_comments": count_comments,
+            "count_blank_lines": False,
+            "pass_ratio": PASS_RATIO,
+        },
+        # Server-side settings the API can't report (KV-cache quantization,
+        # loaded context length, runtime/quant build). Record them via
+        # `--notes` so published comparisons are auditable.
+        "runtime_notes": notes,
+        "relax_indent": relax_indent,   # legacy mirror for older readers
+        "results": [
+            {
+                "function": sc.name,
+                "source_file": r.source_path,
+                "passed": sc.passed,
+                "error": sc.error,
+                "primary_matched": sc.primary_matched,
+                "primary_total": sc.primary_total,
+                "code_matched": sc.code_matched,
+                "code_total": sc.code_total,
+                "prose_matched": sc.prose_matched,
+                "prose_total": sc.prose_total,
+                "blank_skipped": sc.blank_skipped,
+                "raw_total": sc.raw_total,
+                "hallucinated": sc.hallucinated,
+                "bonus_matched": sc.bonus_matched,
+                "latency_s": r.latency_s,
+                "prompt_chars": r.prompt_chars,
+                "response": r.response,
+            }
+            for sc, r in zip(scores, runs)
+        ],
+    }
+        payload["in_progress"] = in_progress
+        if in_progress:
+            payload["complete"] = False
+        write_text_atomic(dump_path, json.dumps(payload, indent=2))
+
     for i, t in enumerate(chosen, 1):
         prompt = _build_prompt(t, text, multi_file, suppress_thinking)
         print(
@@ -323,6 +402,9 @@ def run_benchmark(
         )
         print(render_function(sc), flush=True)
 
+        # Persist what we have before starting the next (possibly long) query.
+        _write_dump(in_progress=True)
+
         # Fail-fast: if N queries in a row error, the rest will too. Bail.
         if score_error:
             consecutive_errors += 1
@@ -370,72 +452,7 @@ def run_benchmark(
     print(render_summary(scores), flush=True)
 
     if dump_path:
-        dump_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": DUMP_SCHEMA_VERSION,
-            "files": [str(p) for p in source.files],
-            "corpus": corpus_name,
-            "corpus_sha256": _sha256(source.text),
-            "corpus_chars": len(source.text),
-            # Completeness — a run that fail-fasted is NOT comparable to a full
-            # one. Consumers (charts, run-missing.py) must check this before
-            # treating the dump as a finished result.
-            "complete": aborted_reason is None,
-            "queries_planned": len(chosen),
-            "queries_run": len(scores),
-            "aborted_reason": aborted_reason,
-            # Request shape — everything that changes what the model saw.
-            "model": cfg.model,
-            "model_label": model_label or cfg.model,
-            "base_url": cfg.base_url,
-            "temperature": cfg.temperature,
-            "max_tokens": cfg.max_tokens,
-            "timeout": cfg.timeout,
-            "reasoning_effort": cfg.reasoning_effort,
-            "prefill_no_think": cfg.prefill_no_think,
-            "use_max_completion_tokens": cfg.use_max_completion_tokens,
-            "stop": cfg.stop,
-            "suppress_thinking": suppress_thinking,
-            # Sampling + scoring policy, so a dump can be reproduced exactly.
-            "sample_k": k,
-            "sample_seed": seed,
-            "function_filter": function_filter,
-            "min_code_lines": min_code_lines,
-            "scoring": {
-                "relax_indent": relax_indent,
-                "count_comments": count_comments,
-                "count_blank_lines": False,
-                "pass_ratio": PASS_RATIO,
-            },
-            # Server-side settings the API can't report (KV-cache quantization,
-            # loaded context length, runtime/quant build). Record them via
-            # `--notes` so published comparisons are auditable.
-            "runtime_notes": notes,
-            "relax_indent": relax_indent,   # legacy mirror for older readers
-            "results": [
-                {
-                    "function": sc.name,
-                    "source_file": r.source_path,
-                    "passed": sc.passed,
-                    "error": sc.error,
-                    "primary_matched": sc.primary_matched,
-                    "primary_total": sc.primary_total,
-                    "code_matched": sc.code_matched,
-                    "code_total": sc.code_total,
-                    "prose_matched": sc.prose_matched,
-                    "prose_total": sc.prose_total,
-                    "blank_skipped": sc.blank_skipped,
-                    "raw_total": sc.raw_total,
-                    "hallucinated": sc.hallucinated,
-                    "bonus_matched": sc.bonus_matched,
-                    "latency_s": r.latency_s,
-                    "prompt_chars": r.prompt_chars,
-                    "response": r.response,
-                }
-                for sc, r in zip(scores, runs)
-            ],
-        }
-        write_text(dump_path, json.dumps(payload, indent=2))
+        _write_dump(in_progress=False)
         print(f"\nResults dumped to {dump_path}", flush=True)
         if aborted_reason:
             print(
