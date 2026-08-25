@@ -232,6 +232,17 @@ def cmd_rescore(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
+    color = p.add_mutually_exclusive_group()
+    color.add_argument(
+        "--no-color", action="store_true",
+        help="never emit ANSI colour (also honoured: NO_COLOR=1). Use when "
+             "piping output or on a console that prints escape codes literally",
+    )
+    color.add_argument(
+        "--color", action="store_true",
+        help="force ANSI colour even when output is not a terminal "
+             "(also honoured: FORCE_COLOR=1)",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # --- extract ------------------------------------------------------------
@@ -316,6 +327,15 @@ def main(argv: list[str] | None = None) -> int:
     use_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Colour: explicit flag wins over NO_COLOR / FORCE_COLOR and auto-detection.
+    from bench.report import set_color_override
+
+    if getattr(args, "no_color", False):
+        set_color_override(False)
+    elif getattr(args, "color", False):
+        set_color_override(True)
+
     return args.func(args)
 
 
