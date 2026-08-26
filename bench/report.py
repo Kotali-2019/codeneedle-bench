@@ -23,6 +23,67 @@ RESET = "\x1b[0m"
 BOLD = "\x1b[1m"
 
 
+# CLI override: True forces colour on, False forces it off, None means decide.
+_COLOR_OVERRIDE: bool | None = None
+
+
+def set_color_override(value: bool | None) -> None:
+    """Force colour on/off for the process. `None` restores auto-detection."""
+    global _COLOR_OVERRIDE
+    _COLOR_OVERRIDE = value
+
+
+def _enable_windows_vt(stream) -> bool:
+    """Turn on ANSI processing for a Windows console. True if colour is safe.
+
+    Windows consoles report `isatty()` as True but historically render escape
+    sequences literally, so users saw `←[32m✓←[0m` in their output and pasted
+    that into issues. Windows 10+ can interpret them once
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING is set; if it can't be set, colour is
+    not safe and we fall back to plain text.
+    """
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32           # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(-11)          # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        if mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+            return True
+        return bool(kernel32.SetConsoleMode(
+            handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+    except Exception:
+        return False
+
+
+def color_enabled(stream=None) -> bool:
+    """Whether ANSI colour should be emitted.
+
+    Order: explicit CLI override, then the NO_COLOR / FORCE_COLOR conventions
+    (no-color.org), then whether the stream is a terminal that can render it.
+    """
+    import os
+
+    if _COLOR_OVERRIDE is not None:
+        return _COLOR_OVERRIDE
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    stream = stream if stream is not None else sys.stdout
+    try:
+        if not stream.isatty():
+            return False
+    except Exception:
+        return False
+    if sys.platform == "win32":
+        return _enable_windows_vt(stream)
+    return True
+
+
 def _colorize(enabled: bool, color: str, text: str) -> str:
     if not enabled:
         return text
@@ -47,7 +108,7 @@ def _composition(score: FunctionScore) -> str:
 
 def render_function(score: FunctionScore, color: bool | None = None) -> str:
     if color is None:
-        color = sys.stdout.isatty()
+        color = color_enabled()
 
     if score.error:
         # Distinguish from a real recall miss — the model never actually answered.
@@ -91,7 +152,7 @@ def render_function(score: FunctionScore, color: bool | None = None) -> str:
 
 def render_summary(scores: list[FunctionScore], color: bool | None = None) -> str:
     if color is None:
-        color = sys.stdout.isatty()
+        color = color_enabled()
     errored = [s for s in scores if s.error]
     real = [s for s in scores if not s.error]
     passed = sum(1 for s in real if s.passed)
