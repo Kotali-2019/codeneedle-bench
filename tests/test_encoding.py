@@ -218,10 +218,25 @@ def test_visualize_survives_cp1252(python_bin, repo_root, tmp_path):
 def test_bundled_plotly_js_written_intact(python_bin, repo_root, tmp_path):
     """plotly.min.js contains CJK; writing it under cp1252 used to abort.
 
-    Specific to this branch — it is what bundles plotly for offline charts.
+    Supplies its own `--results-dir` for the same reason as the test above:
+    `results/*.json` is gitignored, so a fresh clone has none and visualize.py
+    correctly reports nothing to do.
     """
+    results = tmp_path / "results"
+    results.mkdir()
+    write_text(results / "jquery__demo.json", json.dumps({
+        "files": [str(repo_root / "fixtures" / "jquery.js")],
+        "model": "demo",
+        "results": [
+            {"function": f"fn{i}", "passed": True, "error": None,
+             "primary_matched": 18, "primary_total": 20,
+             "hallucinated": 0, "bonus_matched": 0}
+            for i in range(3)
+        ],
+    }))
     subprocess.run(
         [python_bin, str(repo_root / "analysis" / "visualize.py"),
+         "--results-dir", str(results),
          "--output-dir", str(tmp_path / "charts")],
         capture_output=True, cwd=repo_root, env=_cp1252_env(), timeout=300,
         check=True,
