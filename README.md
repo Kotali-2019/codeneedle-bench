@@ -7,6 +7,40 @@ recall under long context, not just named-entity lookup.
 
 [video walkthrough](https://youtu.be/zBYfzecY5ww)
 
+> ### Scoring changed since the video
+>
+> If you follow the video and get different numbers, that's expected — and the
+> repo's are the corrected ones. Issues reported by viewers turned up three
+> defects, all since fixed. **Scores from before these changes are not
+> comparable with scores after them.**
+>
+> | What was wrong | Effect on the old numbers |
+> |---|---|
+> | Blank lines counted as recalled ([#4]) | 21.9% of all "matched" credit was whitespace. 26 function-scores were built *entirely* from blank lines. |
+> | Re-indented lines counted as hallucinations ([#4]) | 21% of reported hallucinations were correct content, indented differently. For several models it was nearly all of them. |
+> | The JS prompt anchored on text that isn't there ([#4]) | 5 of 16 jQuery targets were asked about via `function <name>(`, which doesn't exist for `val: function( value ) {`. Those five averaged 59% vs 79% for the rest — in every model tested. |
+>
+> The third is the one worth understanding: the benchmark was **measuring a
+> defect in its own question**, and charging it to the model. Depth in the file
+> doesn't explain the gap (mean start line 5,261 vs 5,281), and it isn't one
+> bad target (15-point gap remains with the worst one removed).
+>
+> Two smaller corrections came with them: targets whose name *and* signature are
+> duplicated are now excluded, because no prompt can identify them; and the pass
+> threshold is a ratio rather than a fixed 8, since blank lines no longer inflate
+> the denominator. On a 20-line all-code window that is exactly the original 8/20.
+>
+> Thanks to [@AliakseiLasevich], [@tleschinski], [@tcclaviger], [@akierum],
+> [@mazar] and [@QuantForgeSoftware] for the reports that surfaced these.
+
+[#4]: https://github.com/alexziskind1/codeneedle/issues/4
+[@AliakseiLasevich]: https://github.com/AliakseiLasevich
+[@tleschinski]: https://github.com/tleschinski
+[@tcclaviger]: https://github.com/tcclaviger
+[@akierum]: https://github.com/akierum
+[@mazar]: https://github.com/mazar
+[@QuantForgeSoftware]: https://github.com/QuantForgeSoftware
+
 ## Install
 
 This project uses [uv](https://docs.astral.sh/uv/) for Python environment management.
@@ -16,6 +50,19 @@ This project uses [uv](https://docs.astral.sh/uv/) for Python environment manage
 uv venv
 uv pip install -r requirements.txt
 ```
+
+### Tests
+
+```
+uv pip install -r requirements-dev.txt
+uv run pytest              # 106 tests, ~9s, no model or network needed
+```
+
+The suite pins the extractor against the real fixtures (every body line must
+equal the actual source line at that number), covers the scoring policy,
+multi-file corpora, chart generation, and runs the full pipeline against an
+in-process mock server. `smoke_test.py` is retained as a dependency-free
+alternative.
 
 Run any project script via `uv run` (no `source .venv/bin/activate` needed):
 
@@ -43,9 +90,15 @@ Start interactive bash session with all dependencies already pre-installed
 docker compose run --rm app
 ```
 
-Now you can use ether `uv run` or `python` directly
+Now you can use either `uv run` or `python` directly
 
 Close interactive shell by pressing `CTRL-d` or typing `exit` plus `RETURN`
+
+> **macOS/Windows note:** the compose file uses `network_mode: host` so the
+> container can reach a local LM Studio server at `localhost:1234`. On Docker
+> Desktop this must be enabled first (Settings → Resources → Network →
+> "Enable host networking"), or drop that line and pass
+> `--base-url http://host.docker.internal:1234` to your runs.
 
 ## Quick start
 
@@ -69,6 +122,7 @@ configs/
   models/         model identifier and per-model knobs — one TOML per model
 fixtures/         source files to test against (jquery.js, http_server.py, …)
 results/          JSON dumps from every run, auto-named <corpus>__<model>.json
+tests/            pytest suite (see "Tests" above)
 analysis/
   visualize.py    Plotly dashboard builder
   charts/         generated HTML output (gitignored)
@@ -124,13 +178,17 @@ Full hosted-model details and known per-API quirks:
 
 ```toml
 [files]
-directory = "fixtures"   # required
+directory = "fixtures"   # required — relative to repo root, or absolute
 glob      = "*.js"       # required
 limit     = 1            # optional cap on matched files (sorted lexically)
 
 [sample]
-k    = 16                # number of functions to test
-seed = 42
+k              = 16      # number of functions to test
+seed           = 42
+min_code_lines = 0       # optional: skip prose-dominated targets
+
+[scoring]
+count_comments = true    # comments/docstrings earn credit (blank lines never do)
 ```
 
 Shipped:
@@ -138,8 +196,8 @@ Shipped:
 - `jquery` — ~280KB / ~80K-token JS, closest to the video's setup (needs ≥100K loaded context)
 
 If `glob` matches multiple files, they're concatenated with comment-marker
-headers (`# === path ===` / `// === path ===`) so the model sees file
-boundaries. Cross-file name collisions are deduplicated (first occurrence
+headers (`# ====== path ======` / `// ====== path ======`) so the model sees
+file boundaries. Cross-file name collisions are deduplicated (first occurrence
 wins), and the prompt qualifies by file path when more than one file is in play.
 
 ### Models — `configs/models/<name>.toml`
@@ -154,9 +212,18 @@ timeout           = 600.0
 suppress_thinking = true                   # appends /no_think (harmless when ignored)
 ```
 
-Shipped:
-- `qwen3-4b` — small, honors `/no_think`, `max_tokens=1500` is fine
-- `qwen36-35b` — reasoning-on-by-default, ignores every thinking-disable knob; needs `max_tokens=6000`
+Shipped (see `configs/models/` for the full set):
+- `qwen3-4b-2507` — small, honors `/no_think`, low `max_tokens` is fine
+- `qwen36-35b` — reasoning-on-by-default; ignores `/no_think` and
+  `reasoning_effort`, but `prefill_no_think = true` skips CoT reliably, so
+  `max_tokens=1500` is plenty
+- `gemma-4-31b-4bit` / `-bf16` — non-reasoning; needs `stop` sequences (parrots
+  the prompt back) and `relax_indent = true` (normalizes leading whitespace)
+- `qwen36-27b-mlx-4bit` / `-8bit` — same weights, same runtime, quant is the
+  only difference: the controlled comparison for "does quantization hurt
+  recall". Their LM Studio ids (`qwen3.6-27b` / `qwen3.6-27b-mlx`) misleadingly
+  imply GGUF-vs-MLX, so both configs set an explicit `label` for charts.
+- `gpt-5.5`, `claude-sonnet-4-6` — hosted; keys read from `.secrets/`
 
 If you pass `--model FOO` and there's no matching config file, FOO is treated
 as a raw model identifier with sane defaults — so you don't *have* to write a
@@ -207,7 +274,7 @@ orthogonal.
 python3 bench.py run --corpus http_server --model qwen36-35b
 
 # Compare models on the same corpus
-python3 bench.py run --corpus jquery --model qwen3-4b
+python3 bench.py run --corpus jquery --model qwen3-4b-2507
 python3 bench.py run --corpus jquery --model qwen36-35b
 
 # Override anything from the CLI
@@ -218,7 +285,7 @@ python3 bench.py run --corpus http_server --model qwen36-35b \
     --function is_cgi --function translate_path
 
 # Use a raw model identifier (no config file needed)
-python3 bench.py run --corpus http_server --model "qwen/qwen3-4b"
+python3 bench.py run --corpus http_server --model "qwen/qwen3-4b-2507"
 
 # Single-file mode (no corpus config)
 python3 bench.py run --file fixtures/http_server.py --model qwen36-35b
@@ -233,7 +300,7 @@ python3 bench.py rescore results/http_server__qwen36-35b.json
 
 # Build Plotly dashboards comparing every run in results/
 python3 analysis/visualize.py
-# -> analysis/charts/<corpus>.html + analysis/charts/index.html
+# -> analysis/charts/index.html + analysis/charts/<corpus>/<chart>.html
 # (see analysis/VIZ_README.md for what each chart shows)
 ```
 
@@ -247,8 +314,112 @@ Per-function diff uses colors matching the video:
 - **orange**     — expected but missing from the output
 - **yellow**     — hallucinated / mangled line
 - **blue/cyan**  — extra correct lines past the primary 20 (bonus)
+- **dim**        — correct, but not eligible for credit (see below)
 
-Pass threshold per function: ≥ 8 of the 20 expected lines matched.
+Pass threshold per function: **≥ 40% of the scored lines matched**. On a
+20-line all-code window that's exactly the video's 8-of-20.
+
+### What counts toward a score
+
+A 20-line window is rarely 20 lines of code. In the shipped corpora:
+
+| corpus | code | blank | comment | docstring |
+|---|---:|---:|---:|---:|
+| `http_server` | 40% | 17% | 5% | 38% |
+| `jquery`      | 63% | 19% | 18% | — |
+
+So the policy matters:
+
+- **Blank lines never earn credit.** Reproducing whitespace demonstrates no
+  recall, and blanks were ~18% of every window. They're excluded from both the
+  numerator and the denominator. They still take part in the alignment, so a
+  model that puts them in the right places stays in positional sync — only the
+  accounting changes.
+- **Comments and docstrings count by default.** Verbatim prose can't be
+  inferred from surrounding code, so retrieving it is genuine recall. But it
+  isn't *code* recall, so every result reports the split:
+  ```
+  === guess_type  [PASS]  matched=12/16 (75%)  hallucinated=0  bonus=0 ===
+    composition: code 6/8 · prose 6/8 · 4 blank skipped
+  ```
+  Pass `--no-comments` to score code only. `http_server.log_message` has just
+  **one** code line in its window — under the default policy it can pass on
+  docstring recall alone, which the `code=0/1` column makes obvious.
+- **Prose-dominated targets are flagged**, and `--min-code-lines N` (or
+  `[sample] min_code_lines` in a corpus config) drops them from the sample
+  entirely. Default is 0 — no filtering — so existing results stay reproducible.
+
+Re-score any past run under a different policy without re-querying:
+
+```
+python3 bench.py rescore results/http_server__gpt-5.5.json --corpus http_server --no-comments
+```
+
+### Incomplete runs
+
+A run that fail-fasts records `"complete": false` plus the query counts. Charts
+label it **⚠ INCOMPLETE** and outline the bar in red, and `run-missing.py`
+re-runs it instead of treating the file's existence as success. The leaderboard
+plots **percentages**, not raw line counts, so a run with a smaller denominator
+isn't misread as a worse model.
+
+### Crash safety
+
+The results dump is rewritten after **every** query, atomically, so a crash,
+an OOM kill or a Ctrl-C costs you only the query in flight rather than the
+whole run — which on an 80K-token corpus can be half an hour of inference. A
+dump written mid-run carries `"in_progress": true`; `run-missing.py` re-runs
+it and the charts flag it, so a partial run is never mistaken for a result.
+
+### Run provenance
+
+Each dump records the full request shape (model, temperature, token budget,
+reasoning knobs, stop sequences), the sampling parameters (`k`, seed, filters),
+the scoring policy, and a hash of the exact corpus text. Server-side settings
+the API can't report — KV-cache quantization, loaded context length, quant
+build — should be recorded by hand:
+
+```
+python3 bench.py run --corpus jquery --model qwen36-35b \
+    --notes "LM Studio 0.3.x, Q8 KV cache, 131072 ctx, Unsloth Q4_K_XL"
+```
+
+### How a target is identified in the prompt
+
+The prompt quotes the target's **own signature text**, copied verbatim from the
+corpus:
+
+```
+Task: reproduce verbatim the first 20 lines of the body of the function named `val` ...
+
+It is the function introduced by exactly this text:
+
+    	val: function( value ) {
+
+Output the 20 lines that come immediately after it.
+```
+
+Earlier versions instead told the model to look for `function <name>(`. That
+text does not exist for property- or assignment-style definitions — 5 of the 16
+sampled jQuery targets (`PSEUDO`, `init`, `then`, `val`, `parseHTML`) are
+written as `val: function( value ) {` or `jQuery.parseHTML = function(...)`, so
+the model was pointed at a string the file never contains. Across the stored
+runs those five averaged **59%** against **79%** for the rest — a gap present in
+every model tested, and not explained by their depth in the file. The benchmark
+was measuring a defect in its own question.
+
+**Unanswerable targets are excluded.** If a signature is not unique in the file,
+no prompt could single that definition out, so the target is dropped from
+sampling and the exclusion is printed:
+
+```
+excluded 4 unanswerable target(s) — duplicate name AND identical signature: ID, get, setup, sortOrder
+```
+
+jQuery declares 11 eligible names more than once; quoting the signature
+disambiguates 10 of them, because the signatures differ even where the names do
+not (`PSEUDO: function( match )` vs `PSEUDO: function( pseudo, argument )`).
+Only the genuinely identical ones are dropped.
 
 ### Indentation: "hallucination" vs. re-indentation
 
@@ -310,25 +481,17 @@ literal text (`←[32m✓←[0m`).
 
 All files are read and written as UTF-8 explicitly, and `stdout`/`stderr` are
 reconfigured to UTF-8 at startup. Without that, Python falls back to the locale
-encoding — cp1252 on most Windows installs — which cannot represent the `←` in
-the chart navigation or the `≥`/`✓`/`✗` in the console report:
+encoding — cp1252 on most Windows installs — which can't represent the `←` in
+the chart navigation, the `≥`/`⚠`/`✓` in the console report, or the CJK
+characters inside the bundled `plotly.min.js`. Symptoms this prevents:
 
 ```
-UnicodeEncodeError: 'charmap' codec can't encode character '\u2190'
+UnicodeEncodeError: 'charmap' codec can't encode character '←'
 ```
 
 Piping output to a file (`python bench.py run … > run.log`) is covered too —
-that is the case where Windows drops to the locale encoding even though an
+that's the case where Windows drops to the locale encoding even though an
 interactive console would have coped.
-
-### Tests
-
-```
-uv pip install -r requirements-dev.txt
-uv run pytest
-```
-
-`smoke_test.py` remains available as a dependency-free alternative.
 
 ### LM Studio gotchas we hit (read before debugging)
 
@@ -343,11 +506,13 @@ uv run pytest
    request triggers a JIT reload at *default settings*, silently dropping your
    large context. Either disable TTL in the LM Studio UI or re-load before
    each session.
-3. **Reasoning models** (qwen3.5, qwen3.6, …) do not honor `/no_think`,
-   `enable_thinking: false`, `reasoning_effort: "none"`, or any other API toggle
-   we tested. The benchmark still appends `/no_think` (harmless if ignored), but
-   you must give the budget for chain-of-thought *plus* the answer. Default
-   `max_tokens=6000`; bump to 8000+ if responses come back empty.
+3. **Reasoning models** (qwen3.5, qwen3.6, …) mostly ignore `/no_think` and
+   `reasoning_effort`, but **`prefill_no_think = true` does work** — it seeds an
+   empty `<think></think>` assistant turn so the model continues past it. That's
+   why the shipped qwen configs run at `max_tokens=1500` rather than 6000. See
+   the full matrix in [`configs/CONFIG_README.md`](configs/CONFIG_README.md).
+   If a model honors none of the three, give it budget for the chain-of-thought
+   *plus* the answer — bump to 8000+ if responses come back empty.
 
 ## Module map
 

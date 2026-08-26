@@ -15,13 +15,16 @@ Either flag accepts a config name, an explicit path, or a `.toml` path.
 Corpus schema:
 
     [files]
-    directory = "fixtures"        # required, relative to cwd or absolute
+    directory = "fixtures"        # required, relative to repo root or absolute
     glob      = "*.js"            # required
     limit     = 1                 # optional cap, sorted lexically
 
     [sample]
     k    = 16
     seed = 42
+
+    [scoring]
+    count_comments = true         # comments/docstrings earn credit (default)
 
 Model schema (flat — one model per file):
 
@@ -56,6 +59,14 @@ class CorpusConfig:
     limit: int | None
     sample_k: int
     sample_seed: int
+    # Scoring policy lives with the corpus, not the model: it describes what
+    # the questions are worth, and must be identical across models to compare
+    # them. Blank lines never earn credit and aren't configurable.
+    count_comments: bool = True
+    # Drop targets whose primary window has fewer than this many code lines.
+    # Default 0 keeps every target (and keeps existing results reproducible);
+    # raise it to exclude docstring-dominated windows.
+    min_code_lines: int = 0
 
 
 @dataclass
@@ -64,6 +75,10 @@ class ModelConfig:
     client: ClientConfig
     suppress_thinking: bool = True
     relax_indent: bool = False    # score with leading-whitespace ignored on both sides — for models that strip indentation (Gemma 4)
+    # Human-readable name for charts. Server-side model ids are whatever the
+    # runtime registered (e.g. "qwen3.6-27b" for an MLX 4-bit build), which can
+    # actively mislead when comparing quants. Falls back to the server id.
+    label: str | None = None
 
 
 # --- resolution -----------------------------------------------------------
@@ -77,8 +92,6 @@ def _resolve_path(name_or_path: str | Path, search_dir: Path) -> Path:
     candidate = search_dir / f"{name_or_path}.toml"
     if candidate.is_file():
         return candidate.resolve()
-    if p.suffix and p.suffix == ".toml" and p.is_file():
-        return p.resolve()
     raise FileNotFoundError(
         f"config not found: tried '{name_or_path}', '{candidate}'"
     )
@@ -96,9 +109,16 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
         raise ValueError(f"{path}: [files] requires both `directory` and `glob`")
     directory = Path(files_raw["directory"])
     if not directory.is_absolute():
-        directory = Path.cwd() / directory
+        # Resolve relative to the repo root (same rule as `api_key_file` in
+        # model configs) so runs work from any cwd. Fall back to cwd for
+        # user configs written against the old cwd-relative behavior.
+        candidate = REPO_ROOT / directory
+        if not candidate.is_dir() and (Path.cwd() / directory).is_dir():
+            candidate = Path.cwd() / directory
+        directory = candidate
 
     sample_raw = raw.get("sample") or {}
+    scoring_raw = raw.get("scoring") or {}
     return CorpusConfig(
         name=path.stem,
         directory=directory,
@@ -106,6 +126,8 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
         limit=files_raw.get("limit"),
         sample_k=int(sample_raw.get("k", 16)),
         sample_seed=int(sample_raw.get("seed", 42)),
+        count_comments=bool(scoring_raw.get("count_comments", True)),
+        min_code_lines=int(sample_raw.get("min_code_lines", 0)),
     )
 
 
@@ -168,6 +190,7 @@ def load_model_from_file(path: Path) -> ModelConfig:
         client=client,
         suppress_thinking=bool(raw.get("suppress_thinking", True)),
         relax_indent=bool(raw.get("relax_indent", False)),
+        label=raw.get("label"),
     )
 
 

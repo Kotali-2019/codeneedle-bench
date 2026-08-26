@@ -190,17 +190,20 @@ def test_real_jquery_target_reindent(js_source):
     i = next(j for j, l in enumerate(out) if l.strip().startswith("var hooks"))
     out[i] = out[i].lstrip()
 
-    sc = score(t.name, t.primary_lines, t.bonus_lines, "\n".join(out))
+    sc = score(t.name, t.primary_lines, t.bonus_lines, "\n".join(out),
+               primary_kinds=t.primary_kinds, bonus_kinds=t.bonus_kinds)
     assert sc.hallucinated == 0
     assert sc.reindented == 1
-    assert sc.primary_matched == 19
+    # Denominator excludes blank lines on this branch, so compare relatively.
+    assert sc.primary_matched == sc.primary_total - 1
 
 
 def test_perfect_output_unaffected(js_source):
     for name in ("val", "dataAttr", "propFilter"):
         t = next(x for x in js_source.targets if x.name == name)
-        sc = score(t.name, t.primary_lines, t.bonus_lines, "\n".join(t.primary_lines))
-        assert sc.primary_matched == 20, name
+        sc = score(t.name, t.primary_lines, t.bonus_lines, "\n".join(t.primary_lines),
+                   primary_kinds=t.primary_kinds, bonus_kinds=t.bonus_kinds)
+        assert sc.primary_matched == sc.primary_total, name
         assert sc.hallucinated == 0 and sc.reindented == 0, name
         assert sc.passed and not sc.spacing_deviation, name
 

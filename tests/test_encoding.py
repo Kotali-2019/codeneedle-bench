@@ -140,6 +140,7 @@ def test_extract_survives_redirected_cp1252_stdout(python_bin, repo_root, tmp_pa
     assert r.returncode == 0, r.stderr.decode("utf-8", "replace")[-800:]
     text = out.read_bytes().decode("utf-8")
     assert "≥20 body lines" in text, "non-ASCII output must survive redirection"
+    assert "⚠" in text, "the prose-target warning must survive too"
 
 
 def test_rescore_summary_markers_survive_cp1252(python_bin, repo_root, tmp_path):
@@ -214,6 +215,23 @@ def test_visualize_survives_cp1252(python_bin, repo_root, tmp_path):
     assert "← all corpora" in corpus_index.read_text(encoding="utf-8")
 
 
+def test_bundled_plotly_js_written_intact(python_bin, repo_root, tmp_path):
+    """plotly.min.js contains CJK; writing it under cp1252 used to abort.
+
+    Specific to this branch — it is what bundles plotly for offline charts.
+    """
+    subprocess.run(
+        [python_bin, str(repo_root / "analysis" / "visualize.py"),
+         "--output-dir", str(tmp_path / "charts")],
+        capture_output=True, cwd=repo_root, env=_cp1252_env(), timeout=300,
+        check=True,
+    )
+    from plotly.offline import get_plotlyjs
+
+    written = next((tmp_path / "charts").rglob("plotly.min.js"))
+    assert read_text(written) == get_plotlyjs()
+
+
 def test_run_missing_survives_cp1252(python_bin, repo_root, tmp_path):
     out = tmp_path / "out.log"
     with out.open("wb") as fh:
@@ -273,3 +291,13 @@ def test_api_key_file_with_trailing_newline_and_unicode(tmp_path, monkeypatch):
                'name = "x"\napi_key_file = "k.key"\n')
     cfg = config.load_model_from_file(tmp_path / "m.toml")
     assert cfg.client.api_key == "sk-café-123"
+
+
+def test_model_config_with_non_ascii_label(tmp_path):
+    """The `label` field is displayed in charts, so it must round-trip."""
+    from bench.config import load_model_from_file
+
+    write_text(tmp_path / "m.toml",
+               'name = "x"\nlabel = "Qwen3.6 · 27B — MLX ✓"\n')
+    cfg = load_model_from_file(tmp_path / "m.toml")
+    assert cfg.label == "Qwen3.6 · 27B — MLX ✓"

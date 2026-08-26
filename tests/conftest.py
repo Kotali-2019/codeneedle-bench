@@ -15,6 +15,26 @@ def repo_root() -> Path:
     return REPO_ROOT
 
 
+@pytest.fixture(scope="session")
+def py_source(repo_root: Path):
+    """The real http_server.py corpus, parsed once."""
+    from bench.config import load_corpus
+    from bench.extract import load_source_glob
+
+    c = load_corpus("http_server")
+    return load_source_glob(c.directory, c.glob, c.limit)
+
+
+@pytest.fixture(scope="session")
+def js_source(repo_root: Path):
+    """The real jquery.js corpus, parsed once."""
+    from bench.config import load_corpus
+    from bench.extract import load_source_glob
+
+    c = load_corpus("jquery")
+    return load_source_glob(c.directory, c.glob, c.limit)
+
+
 @pytest.fixture
 def python_bin(repo_root: Path) -> str:
     """Interpreter used to spawn the CLI in subprocess-level tests."""

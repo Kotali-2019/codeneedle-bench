@@ -1,0 +1,25 @@
+# Qwen3.6 27B — MLX 8-bit (Apple Silicon native).
+#
+# Pairs with qwen36-27b-mlx-4bit: SAME weights, SAME runtime, only the quant
+# differs. Expect this build to score at or above the 4-bit sibling; if it
+# doesn't, that's a finding worth reporting.
+#
+# Verified from `lms ls --json`: format=safetensors (MLX), quantization=8bit,
+# 27B params, 34.7 GB on disk.
+#   NOTE: this is 8-bit, NOT bf16 — a bf16 27B would be roughly 54 GB. An
+#   earlier revision of this file described the pair as "4-bit vs bf16", which
+#   was wrong. The server-side id "qwen3.6-27b-mlx" also wrongly implies its
+#   sibling is non-MLX; both are MLX. `label` below is what charts display.
+#
+# Same family as qwen36-35b, so `prefill_no_think` is the working CoT bypass.
+# If runs come back empty the prefill isn't being honored on this build —
+# bump max_tokens to ~6000 so CoT plus the answer both fit.
+
+name              = "qwen3.6-27b-mlx"      # id LM Studio knows it by
+label             = "qwen3.6-27b MLX 8bit" # display name used in charts
+base_url          = "http://localhost:1234"
+temperature       = 0.0
+max_tokens        = 1500
+timeout           = 600.0
+prefill_no_think  = true    # the only technique that reliably skips CoT on qwen3.6
+suppress_thinking = true    # appends /no_think; harmless when ignored
