@@ -7,6 +7,40 @@ recall under long context, not just named-entity lookup.
 
 [video walkthrough](https://youtu.be/zBYfzecY5ww)
 
+> ### Scoring changed since the video
+>
+> If you follow the video and get different numbers, that's expected — and the
+> repo's are the corrected ones. Issues reported by viewers turned up three
+> defects, all since fixed. **Scores from before these changes are not
+> comparable with scores after them.**
+>
+> | What was wrong | Effect on the old numbers |
+> |---|---|
+> | Blank lines counted as recalled ([#4]) | 21.9% of all "matched" credit was whitespace. 26 function-scores were built *entirely* from blank lines. |
+> | Re-indented lines counted as hallucinations ([#4]) | 21% of reported hallucinations were correct content, indented differently. For several models it was nearly all of them. |
+> | The JS prompt anchored on text that isn't there ([#4]) | 5 of 16 jQuery targets were asked about via `function <name>(`, which doesn't exist for `val: function( value ) {`. Those five averaged 59% vs 79% for the rest — in every model tested. |
+>
+> The third is the one worth understanding: the benchmark was **measuring a
+> defect in its own question**, and charging it to the model. Depth in the file
+> doesn't explain the gap (mean start line 5,261 vs 5,281), and it isn't one
+> bad target (15-point gap remains with the worst one removed).
+>
+> Two smaller corrections came with them: targets whose name *and* signature are
+> duplicated are now excluded, because no prompt can identify them; and the pass
+> threshold is a ratio rather than a fixed 8, since blank lines no longer inflate
+> the denominator. On a 20-line all-code window that is exactly the original 8/20.
+>
+> Thanks to [@AliakseiLasevich], [@tleschinski], [@tcclaviger], [@akierum],
+> [@mazar] and [@QuantForgeSoftware] for the reports that surfaced these.
+
+[#4]: https://github.com/alexziskind1/codeneedle/issues/4
+[@AliakseiLasevich]: https://github.com/AliakseiLasevich
+[@tleschinski]: https://github.com/tleschinski
+[@tcclaviger]: https://github.com/tcclaviger
+[@akierum]: https://github.com/akierum
+[@mazar]: https://github.com/mazar
+[@QuantForgeSoftware]: https://github.com/QuantForgeSoftware
+
 ## Install
 
 This project uses [uv](https://docs.astral.sh/uv/) for Python environment management.
