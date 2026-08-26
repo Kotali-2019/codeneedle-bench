@@ -291,6 +291,21 @@ For fair comparison matching the video:
 
 Keep temperature at 0. Default `max_tokens=6000` to leave room for reasoning models.
 
+### Colour output
+
+Colour is on for terminals and off when output is piped or redirected, so
+anything you copy out of a log is plain text. Override either way:
+
+```
+python3 bench.py --no-color run --corpus http_server --model <model>   # never colour
+python3 bench.py --color rescore results/<run>.json --corpus jquery    # force colour
+```
+
+`NO_COLOR=1` and `FORCE_COLOR=1` are honoured too ([no-color.org](https://no-color.org)).
+On Windows, ANSI processing is enabled for the console when possible; if it
+cannot be enabled, colour is disabled rather than printing escape codes as
+literal text (`←[32m✓←[0m`).
+
 ### Windows / encoding
 
 All files are read and written as UTF-8 explicitly, and `stdout`/`stderr` are
