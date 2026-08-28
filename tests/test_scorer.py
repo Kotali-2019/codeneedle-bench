@@ -196,3 +196,40 @@ def test_kinds_fallback_when_absent_or_mismatched():
 def test_empty_response_scores_zero():
     sc = score("t", CODE20, [], "", primary_kinds=K20)
     assert sc.primary_matched == 0 and sc.hallucinated == 0 and not sc.passed
+
+
+# --- echoed prefill (issue found on llama.cpp) ----------------------------
+
+
+def test_echoed_think_block_is_not_hallucinated():
+    """`prefill_no_think` is replayed inside `content` by some servers.
+
+    Those tags are ours, not the model's. Counting them added a fixed +2 to
+    every function — on one 16-function run, all 32 reported hallucinations.
+    """
+    sc = score("t", CODE20, [], "<think>\n</think>\n\n" + "\n".join(CODE20),
+               primary_kinds=K20)
+    assert sc.hallucinated == 0
+    assert sc.primary_matched == 20
+
+
+def test_think_block_with_content_is_stripped():
+    out = "<think>\nlet me recall the function\n</think>\n" + "\n".join(CODE20)
+    sc = score("t", CODE20, [], out, primary_kinds=K20)
+    assert sc.hallucinated == 0
+    assert sc.primary_matched == 20
+
+
+def test_think_tag_inside_recalled_code_is_preserved():
+    """Only a LEADING block is stripped; source code containing it must survive."""
+    exp = ["    html = '<think>';", "    return html;"]
+    sc = score("t", exp, [], "\n".join(exp),
+               primary_kinds=[KIND_CODE, KIND_CODE])
+    assert sc.primary_matched == 2, "a <think> in the source is not a prefill echo"
+
+
+def test_unclosed_think_block_left_alone():
+    """No closing tag means we cannot tell where it ends — do not guess."""
+    out = "<think>\n" + "\n".join(CODE20)
+    sc = score("t", CODE20, [], out, primary_kinds=K20)
+    assert sc.primary_matched == 20, "content still scores"

@@ -267,9 +267,31 @@ def _norm_relaxed(s: str) -> str:
     return s.strip()
 
 
+def _strip_think_block(text: str) -> str:
+    """Drop a leading `<think>…</think>` block echoed back by the server.
+
+    `prefill_no_think` seeds the assistant turn with an empty think block to
+    skip chain-of-thought. Some servers (llama.cpp) replay that prefill inside
+    `content`, so every response opens with literal `<think>` / `</think>`
+    lines. Those are ours, not the model's, and counting them as hallucinated
+    added a fixed +2 to every single function — on one 16-function run it
+    accounted for all 32 reported hallucinations.
+
+    Only stripped at the very start, so a `<think>` occurring inside recalled
+    source code is left alone.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("<think>"):
+        return text
+    end = stripped.find("</think>")
+    if end == -1:
+        return text
+    return stripped[end + len("</think>"):]
+
+
 def _clean_output(text: str) -> list[str]:
     """Strip markdown fences and surrounding blank lines. Tolerant of prefix commentary."""
-    lines = text.splitlines()
+    lines = _strip_think_block(text).splitlines()
 
     # If the model wrapped output in fenced code blocks, keep ONLY the fence
     # contents. Pairing fences (rather than slicing first→last) means prose
