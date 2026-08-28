@@ -136,6 +136,7 @@ on the model.** From measurement against this LM Studio build:
 | Qwen 3 4B            | ✅ honors      | ✅ honors  | ⚠ confuses model |
 | Qwen 3.5 9B          | ❌ ignored     | ✅ honors  | ✅ honors |
 | Qwen 3.6 35B (A3B)   | ❌ ignored     | ❌ ignored | ✅ honors |
+| Qwen 3.8 27B         | ❌ ignored     | ❌ ignored | ✅ honors |
 
 Practical guide:
 - **Qwen 3 (non-reasoning)**: `suppress_thinking = true` is enough.
@@ -147,6 +148,42 @@ Practical guide:
   techniques is harmless on models that ignore the unrecognized ones.
 
 When CoT is truly off, `max_tokens=1500` is plenty even for big models.
+
+### Reasoning models on llama.cpp: an empty answer that costs full price
+
+llama.cpp's server returns chain-of-thought in a **separate `reasoning_content`
+field** and leaves `content` empty until the model finishes thinking. A
+reasoning model that ignores `/no_think` will therefore spend its entire
+`max_tokens` budget reasoning and return an empty answer with
+`finish_reason: "length"` — which scores zero while looking like total recall
+failure.
+
+Measured on Qwen3.8-27B, adding `prefill_no_think = true`:
+
+| | without | with |
+|---|---|---|
+| score on a jQuery target | 0% | **79%** |
+| seconds per query | 292 | **22** |
+
+Same model, same corpus — 13× faster *and* correct, because the budget stopped
+going to thinking. `bench.py run` flags this case ("empty response (200 OK but
+no content…)"), so trust that message: it usually means the reasoning-disable
+technique for that model is wrong, not that the model failed.
+
+### Context length: verify it, do not assume it
+
+Setting a large context does not mean you got one. Ollama clamps to the value
+declared in the GGUF regardless of `OLLAMA_CONTEXT_LENGTH` — `qwen2.5-coder:14b`
+declares 32768, so an 80K-token corpus is silently truncated and every score is
+meaningless. Check what actually loaded:
+
+```
+ollama ps                      # CONTEXT column
+curl -s localhost:8080/props   # llama.cpp: n_ctx
+```
+
+llama.cpp's `-c` is explicit and does not clamp, which is why the shipped
+`spark-qwen38-27b` config targets llama-server.
 
 ### Adding a new model
 
