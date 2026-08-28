@@ -1,0 +1,16 @@
+# Qwen3.8 27B (Unsloth Q8_0 GGUF) on llama.cpp CUDA, spark2 / NVIDIA GB10.
+# Context is set explicitly on llama-server (-c 131072) and verified via
+# /props — unlike Ollama, which silently clamps to the GGUF's declared max.
+name              = "Qwen3.8-27B-Q8_0"
+label             = "Qwen3.8 27B (llama.cpp Q8_0, GB10)"
+base_url          = "http://localhost:8080"
+temperature       = 0.0
+max_tokens        = 2000
+timeout           = 1800.0
+suppress_thinking = true    # appended anyway; Qwen3.8 ignores it
+# Qwen3.8 is reasoning-on-by-default and ignores `/no_think`: llama.cpp routes
+# the CoT to `reasoning_content` and leaves `content` EMPTY until it finishes,
+# so a 2000-token budget was being spent entirely on thinking and the answer
+# never arrived (finish_reason=length). Prefilling an empty <think></think>
+# turn is the technique that works — same as qwen3.6 in CONFIG_README.
+prefill_no_think  = true

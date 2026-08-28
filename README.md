@@ -21,7 +21,19 @@ recall under long context, not just named-entity lookup.
 > | The JS prompt anchored on text that isn't there ([#4]) | 5 of 16 jQuery targets were asked about via `function <name>(`, which doesn't exist for `val: function( value ) {`. Those five averaged 59% vs 79% for the rest — in every model tested. |
 >
 > The third is the one worth understanding: the benchmark was **measuring a
-> defect in its own question**, and charging it to the model. Depth in the file
+> defect in its own question**, and charging it to the model. That was later
+> confirmed by direct measurement — same model, same corpus, same scorer, with
+> the prompt as the only variable (`analysis/ab_anchor.py`):
+>
+> | group | content recall, old prompt → new |
+> |---|---|
+> | 5 targets whose anchor was fictional | 79.0% → **97.2%**  (**+18.2**) |
+> | 4 controls whose anchor was already valid | 96.8% → 98.2%  (+1.5) |
+>
+> A ~12× larger effect on exactly the targets the fix addresses, no target worse
+> on content, and an effect size matching the ~20-point gap seen across the
+> stored runs. Measured on Qwen3.8-27B (Q8_0, llama.cpp, 131072 context); n is
+> small, so read it as direction and magnitude rather than a precise figure. Depth in the file
 > doesn't explain the gap (mean start line 5,261 vs 5,281), and it isn't one
 > bad target (15-point gap remains with the worst one removed).
 >
