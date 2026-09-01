@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from bench.generation import current_generation
 from bench.textio import ENCODING, read_text, use_utf8_stdio, write_text
 
 # Characters the project emits that cp1252 cannot encode.
@@ -189,6 +190,7 @@ def test_visualize_survives_cp1252(python_bin, repo_root, tmp_path):
     write_text(results / "jquery__demo.json", json.dumps({
         "files": [str(repo_root / "fixtures" / "jquery.js")],
         "model": "demo",
+        "benchmark_generation": current_generation(),
         "results": [
             {"function": f"fn{i}", "passed": True, "error": None,
              "primary_matched": 18, "primary_total": 20,
@@ -227,6 +229,7 @@ def test_bundled_plotly_js_written_intact(python_bin, repo_root, tmp_path):
     write_text(results / "jquery__demo.json", json.dumps({
         "files": [str(repo_root / "fixtures" / "jquery.js")],
         "model": "demo",
+        "benchmark_generation": current_generation(),
         "results": [
             {"function": f"fn{i}", "passed": True, "error": None,
              "primary_matched": 18, "primary_total": 20,

@@ -375,6 +375,13 @@ re-runs it instead of treating the file's existence as success. The leaderboard
 plots **percentages**, not raw line counts, so a run with a smaller denominator
 isn't misread as a worse model.
 
+Historical results from an unknown or older benchmark generation are also
+treated as stale. New dumps record explicit prompt and scorer versions;
+`analysis/visualize.py` refuses to chart a dump unless both match the current
+implementation, and `run-missing.py` schedules it for a fresh run. This is
+intentional: a dump-schema number cannot prove that two models saw the same
+prompt or were scored under the same rules.
+
 ### Crash safety
 
 The results dump is rewritten after **every** query, atomically, so a crash,
@@ -387,7 +394,8 @@ it and the charts flag it, so a partial run is never mistaken for a result.
 
 Each dump records the full request shape (model, temperature, token budget,
 reasoning knobs, stop sequences), the sampling parameters (`k`, seed, filters),
-the scoring policy, and a hash of the exact corpus text. Server-side settings
+the scoring policy, explicit prompt/scorer generation identifiers, and a hash
+of the exact corpus text. Server-side settings
 the API can't report — KV-cache quantization, loaded context length, quant
 build — should be recorded by hand:
 

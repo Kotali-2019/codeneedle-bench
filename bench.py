@@ -252,6 +252,16 @@ def cmd_rescore(args: argparse.Namespace) -> int:
     from bench.textio import read_text
 
     dump = json.loads(read_text(args.dump))
+    from bench.generation import generation_problem
+
+    generation_warning = generation_problem(dump)
+    if generation_warning:
+        print(
+            f"⚠ this dump is not from the current benchmark generation: "
+            f"{generation_warning}. It can be inspected here, but its result must "
+            "not be compared with current-generation runs.",
+            file=sys.stderr,
+        )
     if args.corpus:
         from bench.config import load_corpus
 

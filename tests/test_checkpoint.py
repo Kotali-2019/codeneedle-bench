@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from bench.client import ClientConfig
+from bench.generation import current_generation
 from bench.runner import run_benchmark
 from bench.textio import read_text, write_text, write_text_atomic
 
@@ -187,6 +188,7 @@ def test_charts_flag_an_in_progress_run(tmp_path, repo_root):
 
     write_text(tmp_path / "jquery__wip.json", json.dumps({
         "files": ["fixtures/jquery.js"], "model": "wip", "in_progress": True,
+        "benchmark_generation": current_generation(),
         "queries_run": 2, "queries_planned": 16,
         "results": [{"function": f"f{i}", "passed": True, "error": None,
                      "primary_matched": 5, "primary_total": 10,

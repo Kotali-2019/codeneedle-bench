@@ -5,6 +5,7 @@ import importlib.util
 import json
 
 import pytest
+from bench.generation import current_generation
 from bench.textio import read_text, write_text
 
 
@@ -24,8 +25,15 @@ def _dump(**over):
         "model": "m", "results": [{"function": "f", "passed": True,
                                    "primary_matched": 5, "primary_total": 10,
                                    "error": None}],
+        "benchmark_generation": current_generation(),
     }
     d.update(over)
+    return d
+
+
+def _legacy_dump(**over):
+    d = _dump(**over)
+    d.pop("benchmark_generation")
     return d
 
 
@@ -60,7 +68,7 @@ def test_complete_flag_false_is_not_done(rm, tmp_path):
 
 def test_legacy_dump_all_errored_is_not_done(rm, tmp_path):
     p = tmp_path / "d.json"
-    write_text(p, json.dumps(_dump(results=[
+    write_text(p, json.dumps(_legacy_dump(results=[
         {"function": "a", "error": "HTTP 400", "passed": False},
         {"function": "b", "error": "HTTP 400", "passed": False},
     ])))
@@ -71,7 +79,7 @@ def test_legacy_dump_all_errored_is_not_done(rm, tmp_path):
 def test_legacy_short_dump_detected_against_corpus(rm, tmp_path):
     """The real bug: a 4-of-16 legacy dump was treated as finished."""
     p = tmp_path / "d.json"
-    write_text(p, json.dumps(_dump(results=[
+    write_text(p, json.dumps(_legacy_dump(results=[
         {"function": f"f{i}", "error": None, "passed": True} for i in range(4)
     ])))
     done, why = rm.result_state(p, "jquery")
@@ -79,12 +87,24 @@ def test_legacy_short_dump_detected_against_corpus(rm, tmp_path):
     assert "4/16" in why
 
 
-def test_legacy_full_dump_is_done(rm, tmp_path):
+def test_legacy_full_dump_is_stale(rm, tmp_path):
     p = tmp_path / "d.json"
-    write_text(p, json.dumps(_dump(results=[
+    write_text(p, json.dumps(_legacy_dump(results=[
         {"function": f"f{i}", "error": None, "passed": True} for i in range(11)
     ])))
-    assert rm.result_state(p, "http_server")[0] is True
+    done, why = rm.result_state(p, "http_server")
+    assert done is False
+    assert "stale benchmark generation" in why
+
+
+def test_outdated_explicit_generation_is_stale(rm, tmp_path):
+    p = tmp_path / "d.json"
+    d = _dump(complete=True)
+    d["benchmark_generation"]["prompt"] = "old-prompt"
+    write_text(p, json.dumps(d))
+    done, why = rm.result_state(p)
+    assert done is False
+    assert "prompt='old-prompt'" in why
 
 
 def test_expected_queries_matches_real_corpora(rm):
@@ -133,6 +153,7 @@ def _run(viz, tmp_path, name, n, total_per=10, matched_per=5, **over):
     data = {
         "files": ["fixtures/jquery.js"],
         "model": name,
+        "benchmark_generation": current_generation(),
         "results": [
             {"function": f"fn{i}", "passed": True, "error": None,
              "primary_matched": matched_per, "primary_total": total_per,
@@ -157,15 +178,26 @@ def test_incomplete_run_flagged_via_complete_field(viz, tmp_path):
     assert "INCOMPLETE 4/16" in labels["short"]
 
 
-def test_legacy_incomplete_inferred_from_peers(viz, tmp_path):
-    """No `complete` field: fewer queries than its peers means cut short."""
+def test_unknown_generation_is_not_charted(viz, tmp_path, capsys):
     _run(viz, tmp_path, "full", 16)
-    _run(viz, tmp_path, "legacyshort", 4)
+    legacy = _run(viz, tmp_path, "legacyshort", 4)
+    data = json.loads(read_text(legacy))
+    data.pop("benchmark_generation")
+    write_text(legacy, json.dumps(data))
     groups = viz.load_runs(tmp_path)
     by = {r.model: r for r in groups["jquery"]}
     assert by["full"].complete is True
-    assert by["legacyshort"].complete is False
-    assert "INCOMPLETE 4/16" in by["legacyshort"].label
+    assert "legacyshort" not in by
+    assert "incompatible benchmark generation" in capsys.readouterr().err
+
+
+def test_outdated_explicit_generation_is_not_charted(viz, tmp_path, capsys):
+    p = _run(viz, tmp_path, "old", 4)
+    data = json.loads(read_text(p))
+    data["benchmark_generation"]["scorer"] = "old-scorer"
+    write_text(p, json.dumps(data))
+    assert viz.load_runs(tmp_path) == {}
+    assert "old-scorer" in capsys.readouterr().err
 
 
 def test_leaderboard_ranks_by_percentage_not_volume(viz, tmp_path):

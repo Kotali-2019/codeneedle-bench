@@ -13,11 +13,13 @@ from .extract import (
 from .report import render_function, render_summary
 from .textio import read_text, write_text, write_text_atomic
 from .scorer import PASS_RATIO, FunctionScore, score
+from .generation import GENERATION_FIELD, current_generation
 
 
 # Bumped when the dump layout changes in a way consumers must notice.
 # 2 = added completeness + provenance + code/prose breakdown.
-DUMP_SCHEMA_VERSION = 2
+# 3 = added explicit prompt/scorer generation metadata.
+DUMP_SCHEMA_VERSION = 3
 
 
 # Keeping the file FIRST and the tiny task suffix LAST is deliberate:
@@ -280,6 +282,7 @@ def run_benchmark(
         dump_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
         "schema_version": DUMP_SCHEMA_VERSION,
+        GENERATION_FIELD: current_generation(),
         "files": [str(p) for p in source.files],
         "corpus": corpus_name,
         "corpus_sha256": _sha256(source.text),

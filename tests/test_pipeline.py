@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from bench.client import ClientConfig
+from bench.generation import current_generation
 from bench.runner import DUMP_SCHEMA_VERSION, run_benchmark
 from bench.textio import read_text, write_text
 
@@ -103,6 +104,7 @@ def test_dump_records_full_provenance(mock_server, py_source, tmp_path):
     d = json.loads(read_text(dump))
 
     assert d["schema_version"] == DUMP_SCHEMA_VERSION
+    assert d["benchmark_generation"] == current_generation()
     assert d["complete"] is True
     assert d["queries_run"] == d["queries_planned"] == _answerable(py_source)
     assert d["aborted_reason"] is None

@@ -30,6 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))   # so `import bench…` works regardless of cwd
 
 from bench.scorer import PASS_RATIO  # noqa: E402 — needs the sys.path insert above
+from bench.generation import generation_problem  # noqa: E402
 from bench.textio import read_text, write_text, use_utf8_stdio  # noqa: E402
 
 PASS_PCT = PASS_RATIO * 100
@@ -119,6 +120,14 @@ def load_runs(results_dir: Path) -> dict[str, list[Run]]:
             print(f"skip {p.name}: {e}", file=sys.stderr)
             continue
         if not data.get("results"):
+            continue
+        problem = generation_problem(data)
+        if problem:
+            print(
+                f"skip {p.name}: incompatible benchmark generation ({problem}); "
+                "re-run this corpus/model with the current benchmark",
+                file=sys.stderr,
+            )
             continue
         group = _group_name(data)
         # Prefer the config's display label: raw server ids can misdescribe a

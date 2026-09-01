@@ -138,14 +138,25 @@ def result_state(path: Path, corpus_stem: str | None = None) -> tuple[bool, str]
             ran = data.get("queries_run", len(results))
             planned = data.get("queries_planned", "?")
             return False, f"incomplete ({ran}/{planned} queries)"
-        return True, "complete"
-    # Legacy dump (schema_version < 2): no `complete` flag, so infer.
-    if all(r.get("error") for r in results):
-        return False, "legacy dump, every query errored"
-    if corpus_stem:
-        want = expected_queries(corpus_stem)
-        if want is not None and len(results) < want:
-            return False, f"legacy dump, only {len(results)}/{want} queries"
+    else:
+        # Legacy dump (schema_version < 2): no `complete` flag, so infer
+        # completeness before reporting its generation as stale. This preserves
+        # the more useful diagnostic for interrupted/error-only artifacts.
+        if all(r.get("error") for r in results):
+            return False, "legacy dump, every query errored"
+        if corpus_stem:
+            want = expected_queries(corpus_stem)
+            if want is not None and len(results) < want:
+                return False, f"legacy dump, only {len(results)}/{want} queries"
+
+    # A complete result from an unknown/old prompt must be re-run. Schema v2
+    # existed across multiple prompt generations, so schema_version alone
+    # cannot establish comparability.
+    from bench.generation import generation_problem
+
+    problem = generation_problem(data)
+    if problem:
+        return False, f"stale benchmark generation ({problem})"
     return True, "complete"
 
 

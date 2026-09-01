@@ -51,6 +51,12 @@ python3 analysis/visualize.py --results-dir results --output-dir analysis/charts
 
 Re-run any time. It overwrites the HTML; nothing is incremental.
 
+Only results carrying the current `benchmark_generation.prompt` and
+`benchmark_generation.scorer` values are loaded. Older or unversioned dumps
+are skipped with a diagnostic instead of being mixed into a current
+leaderboard. Run `python3 run-missing.py` to identify and regenerate those
+stale corpus/model combinations.
+
 ## What each chart shows
 
 Three charts per corpus, one chart per page. Models get a stable color across
@@ -122,6 +128,10 @@ The script reads:
 - `results/*.json` — all the dumps `bench.py run` produced
 - `fixtures/<file>` — re-extracted at viz time so the position chart can map
   function names → start lines (this is robust against repo renames)
+
+The raw response is retained in every dump, but scoring it again cannot repair
+a historical prompt difference. That is why unknown prompt generations are
+excluded rather than inferred from `schema_version`.
 
 It does *not* require the original `--corpus` config to render — only the
 dump JSON and the fixture file. If the fixture moved, the position chart
