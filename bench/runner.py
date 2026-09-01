@@ -12,8 +12,9 @@ from .extract import (
 )
 from .report import render_function, render_summary
 from .textio import read_text, write_text, write_text_atomic
-from .scorer import PASS_RATIO, FunctionScore, score
+from .scorer import FunctionScore, score
 from .generation import GENERATION_FIELD, current_generation
+from .scoring_policy import ScoringPolicy
 
 
 # Bumped when the dump layout changes in a way consumers must notice.
@@ -311,12 +312,10 @@ def run_benchmark(
         "sample_seed": seed,
         "function_filter": function_filter,
         "min_code_lines": min_code_lines,
-        "scoring": {
-            "relax_indent": relax_indent,
-            "count_comments": count_comments,
-            "count_blank_lines": False,
-            "pass_ratio": PASS_RATIO,
-        },
+        "scoring": ScoringPolicy(
+            relax_indent=relax_indent,
+            count_comments=count_comments,
+        ).as_dict(),
         # Server-side settings the API can't report (KV-cache quantization,
         # loaded context length, runtime/quant build). Record them via
         # `--notes` so published comparisons are auditable.

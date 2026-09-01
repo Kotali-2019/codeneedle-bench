@@ -9,3 +9,7 @@ limit = 1
 [sample]
 k = 16    # falls back to all 11 since the file has fewer
 seed = 42
+
+[scoring]
+count_comments = true
+relax_indent = false

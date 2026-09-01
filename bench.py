@@ -196,8 +196,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         dump_path = auto_dump_path(synthetic_corpus, model, DEFAULT_RESULTS_DIR)
 
-    # Indent-tolerant scoring: take from model config, allow CLI overrides in either direction.
-    relax_indent = model.relax_indent
+    # Scoring policy belongs to the corpus so every model is judged by the
+    # same rules. CLI flags are explicit one-run overrides.
+    relax_indent = corpus.relax_indent if corpus is not None else False
     if args.relax_indent:
         relax_indent = True
     if args.strict_indent:
@@ -398,20 +399,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-fail-fast", action="store_true",
         help="disable fail-fast; run every query even if they're all erroring",
     )
-    p_run.add_argument(
+    indent = p_run.add_mutually_exclusive_group()
+    indent.add_argument(
         "--relax-indent", action="store_true",
-        help="ignore leading whitespace when matching (overrides model config to true)",
+        help="ignore leading whitespace when matching (overrides corpus config to true)",
     )
-    p_run.add_argument(
+    indent.add_argument(
         "--strict-indent", action="store_true",
-        help="enforce verbatim indentation (overrides model config to false)",
+        help="enforce verbatim indentation (overrides corpus config to false)",
     )
-    p_run.add_argument(
+    comments = p_run.add_mutually_exclusive_group()
+    comments.add_argument(
         "--no-comments", action="store_true",
         help="score only code lines; comments and docstrings earn no credit "
              "(blank lines never do, either way)",
     )
-    p_run.add_argument(
+    comments.add_argument(
         "--count-comments", action="store_true",
         help="count comments/docstrings toward the score (the default; "
              "overrides a corpus config that turned them off)",
@@ -434,19 +437,21 @@ def build_parser() -> argparse.ArgumentParser:
     src_grp = p_rs.add_mutually_exclusive_group()
     src_grp.add_argument("--corpus", help="re-locate corpus via this config")
     src_grp.add_argument("--file", help="re-locate corpus from a single file")
-    p_rs.add_argument(
+    indent = p_rs.add_mutually_exclusive_group()
+    indent.add_argument(
         "--relax-indent", action="store_true",
         help="ignore leading whitespace when matching (overrides dump's setting)",
     )
-    p_rs.add_argument(
+    indent.add_argument(
         "--strict-indent", action="store_true",
         help="enforce verbatim indentation (overrides dump's setting)",
     )
-    p_rs.add_argument(
+    comments = p_rs.add_mutually_exclusive_group()
+    comments.add_argument(
         "--no-comments", action="store_true",
         help="score only code lines (overrides the dump's setting)",
     )
-    p_rs.add_argument(
+    comments.add_argument(
         "--count-comments", action="store_true",
         help="count comments/docstrings (overrides the dump's setting)",
     )

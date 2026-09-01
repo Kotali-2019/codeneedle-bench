@@ -31,6 +31,9 @@ sys.path.insert(0, str(REPO_ROOT))   # so `import bench…` works regardless of 
 
 from bench.scorer import PASS_RATIO  # noqa: E402 — needs the sys.path insert above
 from bench.generation import generation_problem  # noqa: E402
+from bench.scoring_policy import (  # noqa: E402
+    DEFAULT_SCORING_POLICY, policy_from_dump,
+)
 from bench.textio import read_text, write_text, use_utf8_stdio  # noqa: E402
 
 PASS_PCT = PASS_RATIO * 100
@@ -82,12 +85,23 @@ class Run:
 
 
 def _group_name(data: dict) -> str:
+    """Corpus group plus a suffix when its scoring policy is non-default.
+
+    A scoring override creates a separate dashboard instead of silently adding
+    an easier or harder trace to the default leaderboard.
+    """
     files = data.get("files") or ([data["source"]] if data.get("source") else [])
     if not files:
-        return "unknown"
-    if len(files) == 1:
-        return Path(files[0]).stem
-    return "+".join(Path(f).stem for f in files[:3])
+        base = "unknown"
+    elif len(files) == 1:
+        base = Path(files[0]).stem
+    else:
+        base = "+".join(Path(f).stem for f in files[:3])
+
+    policy = policy_from_dump(data)
+    if policy == DEFAULT_SCORING_POLICY:
+        return base
+    return f"{base}__{policy.slug}"
 
 
 def _label_from_config(result_path: Path) -> str | None:
@@ -129,7 +143,11 @@ def load_runs(results_dir: Path) -> dict[str, list[Run]]:
                 file=sys.stderr,
             )
             continue
-        group = _group_name(data)
+        try:
+            group = _group_name(data)
+        except ValueError as e:
+            print(f"skip {p.name}: incompatible scoring policy ({e})", file=sys.stderr)
+            continue
         # Prefer the config's display label: raw server ids can misdescribe a
         # build (an MLX 4-bit registered as plain "qwen3.6-27b", for instance).
         name = (
@@ -520,6 +538,7 @@ def write_corpus_index(out_path: Path, group: str, runs: list[Run],
                        generated_pages: list[tuple[str, str]]) -> None:
     models = sorted({r.model for r in runs})
     queries = sum(len(r.data["results"]) for r in runs)
+    policy = policy_from_dump(runs[0].data)
     items = "".join(
         f'<li><a href="{slug}.html">{title}</a></li>'
         for slug, title in generated_pages
@@ -529,7 +548,8 @@ def write_corpus_index(out_path: Path, group: str, runs: list[Run],
         f'<header><a href="../index.html">← all corpora</a></header>'
         f'<h1>{group}</h1>'
         f'<p class="caption">{len(runs)} run(s) · {queries} queries · '
-        f'{len(models)} unique model(s): {", ".join(models)}</p>'
+        f'{len(models)} unique model(s): {", ".join(models)}<br>'
+        f'scoring: {policy.description}</p>'
         f'<ul>{items}</ul>'
         f'</div>'
     )

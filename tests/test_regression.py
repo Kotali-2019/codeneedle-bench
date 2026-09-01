@@ -160,3 +160,15 @@ def test_every_corpus_config_loads(repo_root):
         cfg = load_corpus(c.stem)
         assert cfg.directory.is_dir(), f"{c.name}: directory missing"
         assert cfg.sample_k > 0
+        assert cfg.relax_indent is False, (
+            f"{c.name}: shipped comparison corpora must score every model strictly"
+        )
+
+
+def test_model_config_cannot_set_scoring_policy(tmp_path):
+    from bench.config import load_model_from_file
+
+    p = tmp_path / "model.toml"
+    write_text(p, 'name = "mock"\nrelax_indent = true\n')
+    with pytest.raises(ValueError, match="scoring policy.*corpus config"):
+        load_model_from_file(p)

@@ -201,6 +201,7 @@ min_code_lines = 0       # optional: skip prose-dominated targets
 
 [scoring]
 count_comments = true    # comments/docstrings earn credit (blank lines never do)
+relax_indent   = false   # strict verbatim matching for every model
 ```
 
 Shipped:
@@ -229,8 +230,9 @@ Shipped (see `configs/models/` for the full set):
 - `qwen36-35b` — reasoning-on-by-default; ignores `/no_think` and
   `reasoning_effort`, but `prefill_no_think = true` skips CoT reliably, so
   `max_tokens=1500` is plenty
-- `gemma-4-31b-4bit` / `-bf16` — non-reasoning; needs `stop` sequences (parrots
-  the prompt back) and `relax_indent = true` (normalizes leading whitespace)
+- `gemma-4-31b-4bit` / `-bf16` — non-reasoning; needs `stop` sequences because
+  it parrots the prompt back. Gemma normalizes leading whitespace, which is
+  reported separately but does not change its scoring policy.
 - `qwen36-27b-mlx-4bit` / `-8bit` — same weights, same runtime, quant is the
   only difference: the controlled comparison for "does quantization hurt
   recall". Their LM Studio ids (`qwen3.6-27b` / `qwen3.6-27b-mlx`) misleadingly
@@ -262,6 +264,9 @@ together — there is no shared parent file or inheritance.
    `--api-key`
 4. sampling overrides (`-k`, `--seed`) layer over the **corpus config**'s
    `[sample]` the same way
+5. scoring overrides (`--relax-indent`, `--strict-indent`, `--no-comments`,
+   `--count-comments`) layer over the corpus's `[scoring]` section; use the
+   same override for every model you intend to compare
 
 This means model knobs can come from anywhere on the chain. A typical config
 sets the model-specific defaults (e.g. `max_tokens=6000` for a reasoning model)
@@ -465,9 +470,12 @@ python3 bench.py run --corpus jquery --model <model> --relax-indent
 python3 bench.py rescore results/jquery__<model>.json --corpus jquery --relax-indent
 ```
 
-or set `relax_indent = true` in the model config. The summary tells you when
-this would make a difference. Models that normalize indentation (Gemma 4, for
-one) can otherwise look far worse than they are.
+For a comparable content-normalized leaderboard, set `relax_indent = true`
+under `[scoring]` in a separate corpus config and run **every model** against
+that corpus. Scoring policy cannot be set in a model config: allowing Gemma, for
+example, to ignore indentation while its peers are judged strictly would make
+the ranking invalid. The dashboard keeps non-default scoring policies in
+separate cohorts.
 
 ## Server setup notes
 

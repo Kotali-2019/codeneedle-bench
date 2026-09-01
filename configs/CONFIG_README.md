@@ -67,6 +67,7 @@ Supported extensions: `.js`, `.mjs`, `.cjs` (esprima), `.py` (`ast`).
 | field | default | meaning |
 |---|---|---|
 | `count_comments` | `true` | whether comments and docstrings earn credit. They're genuine recall (prose can't be inferred from surrounding code), so they count by default — but every result reports the code-vs-prose split so you can see where a score came from. Set `false`, or pass `--no-comments`, to score code only. |
+| `relax_indent` | `false` | whether leading indentation is ignored during matching. This belongs to the corpus so every model in a comparison uses the same rule. For content-normalized analysis, create a separate corpus config with this set to `true` and rerun every model. |
 
 **Blank lines never earn credit** and this isn't configurable. They were ~18% of
 every expected window, and reproducing whitespace demonstrates no recall. They
@@ -78,6 +79,10 @@ identical to the original 8-of-20 on an all-code window.
 Scoring policy lives with the **corpus**, not the model: it defines what the
 questions are worth, and must be identical across models for a comparison to
 mean anything.
+
+Model configs are rejected if they contain `relax_indent`. A model-specific
+scoring exception would make the leaderboard incomparable; use a separate
+corpus/scoring cohort instead.
 
 ### Adding a new corpus
 
@@ -290,6 +295,9 @@ loaded independently and stitched together in the runner.
 3. CLI overrides — `--base-url`, `--max-tokens`, `--temperature`, `--timeout`,
    `--api-key`
 4. Sample overrides (`-k`, `--seed`) layer over the corpus config the same way
+5. Scoring overrides (`--relax-indent`, `--strict-indent`, `--no-comments`,
+   `--count-comments`) layer over `[scoring]`; comparisons require applying the
+   same policy to every model
 
 `--file` and `--corpus` are mutually exclusive on the source side: use one or
 the other, not both. For the model you can mix config + overrides freely:

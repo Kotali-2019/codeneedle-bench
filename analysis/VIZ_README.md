@@ -110,12 +110,19 @@ you need ~80K+ tokens in the prompt: run the `jquery` corpus.
 
 ## Grouping rule
 
-Runs are grouped by **corpus**, not model. The grouping key is the set of
-file basenames in the dump's `files` field. So:
+Runs are grouped by **corpus and scoring policy**, not model. The base grouping
+key is the set of file basenames in the dump's `files` field. The default
+strict/comments-counted policy keeps the plain corpus name; non-default
+policies receive a descriptive suffix. So:
 
 - All runs against `fixtures/http_server.py` → `analysis/charts/http_server/`
 - All runs against `fixtures/jquery.js` → `analysis/charts/jquery/`
 - A run against `fixtures/foo.py + fixtures/bar.py` → its own group
+- Content-normalized jQuery runs →
+  `analysis/charts/jquery__content-comments-no-blanks-pass-40pct/`
+
+This prevents a model scored with relaxed indentation or code-only scoring
+from appearing in the same leaderboard as strictly scored peers.
 
 Within a dashboard, each run shows up as its own colored line / bar even if
 it's the same model — re-running is a separate trace, distinguished in the

@@ -55,6 +55,19 @@ def test_bad_corpus_name_is_a_clean_error(python_bin, repo_root):
     assert "config not found" in (r.stderr + r.stdout)
 
 
+@pytest.mark.parametrize("flags", [
+    ("--relax-indent", "--strict-indent"),
+    ("--no-comments", "--count-comments"),
+])
+def test_conflicting_scoring_overrides_are_rejected(python_bin, repo_root, flags):
+    r = run_cli(
+        python_bin, repo_root, "run", "--corpus", "http_server",
+        "--model", "mock", *flags,
+    )
+    assert r.returncode != 0
+    assert "not allowed with argument" in r.stderr
+
+
 # --- extract --------------------------------------------------------------
 
 

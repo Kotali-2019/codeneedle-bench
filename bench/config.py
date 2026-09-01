@@ -25,6 +25,7 @@ Corpus schema:
 
     [scoring]
     count_comments = true         # comments/docstrings earn credit (default)
+    relax_indent   = false        # strict verbatim matching (default)
 
 Model schema (flat — one model per file):
 
@@ -63,6 +64,7 @@ class CorpusConfig:
     # the questions are worth, and must be identical across models to compare
     # them. Blank lines never earn credit and aren't configurable.
     count_comments: bool = True
+    relax_indent: bool = False
     # Drop targets whose primary window has fewer than this many code lines.
     # Default 0 keeps every target (and keeps existing results reproducible);
     # raise it to exclude docstring-dominated windows.
@@ -74,7 +76,6 @@ class ModelConfig:
     name: str            # config stem, used in result filename
     client: ClientConfig
     suppress_thinking: bool = True
-    relax_indent: bool = False    # score with leading-whitespace ignored on both sides — for models that strip indentation (Gemma 4)
     # Human-readable name for charts. Server-side model ids are whatever the
     # runtime registered (e.g. "qwen3.6-27b" for an MLX 4-bit build), which can
     # actively mislead when comparing quants. Falls back to the server id.
@@ -127,6 +128,7 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
         sample_k=int(sample_raw.get("k", 16)),
         sample_seed=int(sample_raw.get("seed", 42)),
         count_comments=bool(scoring_raw.get("count_comments", True)),
+        relax_indent=bool(scoring_raw.get("relax_indent", False)),
         min_code_lines=int(sample_raw.get("min_code_lines", 0)),
     )
 
@@ -172,6 +174,11 @@ def load_model_from_file(path: Path) -> ModelConfig:
     stop_raw = raw.get("stop")
     if stop_raw is not None and not isinstance(stop_raw, list):
         raise ValueError(f"{path}: `stop` must be a list of strings if set")
+    if "relax_indent" in raw:
+        raise ValueError(
+            f"{path}: `relax_indent` is a scoring policy and is no longer valid "
+            "in a model config; move it under [scoring] in the corpus config"
+        )
     api_key = _resolve_api_key(raw, path)
     client = ClientConfig(
         base_url=raw.get("base_url", "http://localhost:1234"),
@@ -189,7 +196,6 @@ def load_model_from_file(path: Path) -> ModelConfig:
         name=path.stem,
         client=client,
         suppress_thinking=bool(raw.get("suppress_thinking", True)),
-        relax_indent=bool(raw.get("relax_indent", False)),
         label=raw.get("label"),
     )
 

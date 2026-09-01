@@ -6,6 +6,7 @@ import json
 
 import pytest
 from bench.generation import current_generation
+from bench.scoring_policy import DEFAULT_SCORING_POLICY
 from bench.textio import read_text, write_text
 
 
@@ -26,6 +27,7 @@ def _dump(**over):
                                    "primary_matched": 5, "primary_total": 10,
                                    "error": None}],
         "benchmark_generation": current_generation(),
+        "scoring": DEFAULT_SCORING_POLICY.as_dict(),
     }
     d.update(over)
     return d
@@ -107,6 +109,16 @@ def test_outdated_explicit_generation_is_stale(rm, tmp_path):
     assert "prompt='old-prompt'" in why
 
 
+def test_nondefault_scoring_policy_does_not_fill_default_matrix_cell(rm, tmp_path):
+    p = tmp_path / "d.json"
+    d = _dump(complete=True)
+    d["scoring"]["relax_indent"] = True
+    write_text(p, json.dumps(d))
+    done, why = rm.result_state(p, "http_server")
+    assert done is False
+    assert "non-default scoring policy" in why
+
+
 def test_expected_queries_matches_real_corpora(rm):
     assert rm.expected_queries("http_server") == 11
     assert rm.expected_queries("jquery") == 16
@@ -154,6 +166,7 @@ def _run(viz, tmp_path, name, n, total_per=10, matched_per=5, **over):
         "files": ["fixtures/jquery.js"],
         "model": name,
         "benchmark_generation": current_generation(),
+        "scoring": DEFAULT_SCORING_POLICY.as_dict(),
         "results": [
             {"function": f"fn{i}", "passed": True, "error": None,
              "primary_matched": matched_per, "primary_total": total_per,
@@ -198,6 +211,31 @@ def test_outdated_explicit_generation_is_not_charted(viz, tmp_path, capsys):
     write_text(p, json.dumps(data))
     assert viz.load_runs(tmp_path) == {}
     assert "old-scorer" in capsys.readouterr().err
+
+
+def test_scoring_overrides_get_a_separate_dashboard(viz, tmp_path):
+    _run(viz, tmp_path, "strict", 4)
+    p = _run(viz, tmp_path, "content", 4)
+    data = json.loads(read_text(p))
+    data["scoring"]["relax_indent"] = True
+    write_text(p, json.dumps(data))
+
+    groups = viz.load_runs(tmp_path)
+    assert set(groups) == {
+        "jquery",
+        "jquery__content-comments-no-blanks-pass-40pct",
+    }
+    assert groups["jquery"][0].model == "strict"
+    assert groups["jquery__content-comments-no-blanks-pass-40pct"][0].model == "content"
+
+
+def test_missing_scoring_policy_is_not_charted(viz, tmp_path, capsys):
+    p = _run(viz, tmp_path, "unknown-policy", 4)
+    data = json.loads(read_text(p))
+    data.pop("scoring")
+    write_text(p, json.dumps(data))
+    assert viz.load_runs(tmp_path) == {}
+    assert "missing `scoring` policy metadata" in capsys.readouterr().err
 
 
 def test_leaderboard_ranks_by_percentage_not_volume(viz, tmp_path):

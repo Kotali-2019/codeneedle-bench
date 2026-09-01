@@ -9,3 +9,7 @@ limit = 1
 [sample]
 k = 16
 seed = 42
+
+[scoring]
+count_comments = true
+relax_indent = false

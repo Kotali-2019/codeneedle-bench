@@ -157,6 +157,27 @@ def result_state(path: Path, corpus_stem: str | None = None) -> tuple[bool, str]
     problem = generation_problem(data)
     if problem:
         return False, f"stale benchmark generation ({problem})"
+
+    # run-missing executes the corpus config's default policy. A dump produced
+    # with one-off CLI scoring overrides does not satisfy that matrix cell.
+    if corpus_stem:
+        try:
+            from bench.config import load_corpus
+            from bench.scoring_policy import ScoringPolicy, policy_from_dump
+
+            corpus = load_corpus(corpus_stem)
+            expected_policy = ScoringPolicy(
+                relax_indent=corpus.relax_indent,
+                count_comments=corpus.count_comments,
+            )
+            actual_policy = policy_from_dump(data)
+        except Exception as e:
+            return False, f"invalid scoring policy metadata ({e})"
+        if actual_policy != expected_policy:
+            return False, (
+                "non-default scoring policy "
+                f"({actual_policy.description}; expected {expected_policy.description})"
+            )
     return True, "complete"
 
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 
 PROMPT_VERSION = "signature-anchor-v1"
-SCORER_VERSION = "blankless-line-lcs-v2"
+SCORER_VERSION = "blankless-line-lcs-v3"
 GENERATION_FIELD = "benchmark_generation"
 
 
