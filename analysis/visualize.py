@@ -76,19 +76,33 @@ class Run:
         return self.group_max == 0 or self.n_queries >= self.group_max
 
     @property
+    def error_count(self) -> int:
+        return sum(1 for result in self.data.get("results", []) if result.get("error"))
+
+    @property
+    def valid(self) -> bool:
+        """Whether this run can participate in a model-quality ranking."""
+        return self.complete and self.error_count == 0
+
+    @property
     def label(self) -> str:
-        """Model name, flagged when the run didn't finish every query."""
-        if self.complete:
+        """Model name, flagged when execution was incomplete or errored."""
+        if self.valid:
             return self.model
-        planned = self.data.get("queries_planned") or self.group_max or "?"
-        return f"{self.model} ⚠ INCOMPLETE {self.n_queries}/{planned}"
+        flags = []
+        if not self.complete:
+            planned = self.data.get("queries_planned") or self.group_max or "?"
+            flags.append(f"INCOMPLETE {self.n_queries}/{planned}")
+        if self.error_count:
+            flags.append(f"ERRORS {self.error_count}")
+        return f"{self.model} ⚠ {' · '.join(flags)}"
 
 
 def _group_name(data: dict) -> str:
-    """Corpus group plus a suffix when its scoring policy is non-default.
+    """Corpus group plus suffixes for non-default score contracts.
 
-    A scoring override creates a separate dashboard instead of silently adding
-    an easier or harder trace to the default leaderboard.
+    A scoring override or different recall-window length creates a separate
+    dashboard instead of silently mixing easier and harder traces.
     """
     files = data.get("files") or ([data["source"]] if data.get("source") else [])
     if not files:
@@ -99,9 +113,13 @@ def _group_name(data: dict) -> str:
         base = "+".join(Path(f).stem for f in files[:3])
 
     policy = policy_from_dump(data)
-    if policy == DEFAULT_SCORING_POLICY:
-        return base
-    return f"{base}__{policy.slug}"
+    suffixes = []
+    primary_lines = int(data.get("primary_lines", 20))
+    if primary_lines != 20:
+        suffixes.append(f"{primary_lines}-lines")
+    if policy != DEFAULT_SCORING_POLICY:
+        suffixes.append(policy.slug)
+    return base if not suffixes else f"{base}__{'__'.join(suffixes)}"
 
 
 def _label_from_config(result_path: Path) -> str | None:
@@ -237,44 +255,45 @@ def leaderboard(runs: list[Run], colors: dict[str, str]):
     """Horizontal bar chart, one trace per run (so each is independently
     toggleable from the legend). Sorted best → worst by percentage matched.
 
-    Percentage, not absolute count: a run that fail-fasted after 4 of 16
-    queries has a much smaller denominator, so comparing raw totals made an
-    aborted run look like a terrible model rather than a broken one.
+    Quality percentages include successful queries only.  Request errors are
+    not recall misses: runs containing them are visibly ineligible and sorted
+    after valid runs instead of being given artificial zero-match rows.
     """
     import plotly.graph_objects as go
 
     rows = []
     for r in runs:
-        matched = sum(x.get("primary_matched", 0) for x in r.data["results"])
-        total = sum(x.get("primary_total", 0) for x in r.data["results"])
-        code_m = sum(x.get("code_matched", 0) for x in r.data["results"])
-        code_t = sum(x.get("code_total", 0) for x in r.data["results"])
-        passed = sum(1 for x in r.data["results"] if x.get("passed"))
-        queries = len(r.data["results"])
-        halluc = sum(x.get("hallucinated", 0) for x in r.data["results"])
-        errored = sum(1 for x in r.data["results"] if x.get("error"))
+        attempted = r.data["results"]
+        scored = [x for x in attempted if not x.get("error")]
+        matched = sum(x.get("primary_matched", 0) for x in scored)
+        total = sum(x.get("primary_total", 0) for x in scored)
+        code_m = sum(x.get("code_matched", 0) for x in scored)
+        code_t = sum(x.get("code_total", 0) for x in scored)
+        passed = sum(1 for x in scored if x.get("passed"))
+        halluc = sum(x.get("hallucinated", 0) for x in scored)
+        errored = r.error_count
         rows.append({
             "model": r.label, "stem": r.path.stem, "color_key": r.model,
             "matched": matched, "total": total,
             "pct": (matched / total * 100) if total else 0.0,
             "code_m": code_m, "code_t": code_t,
-            "passed": passed, "queries": queries,
+            "passed": passed, "scored": len(scored), "attempted": len(attempted),
             "halluc": halluc, "errored": errored,
-            "complete": r.complete,
+            "complete": r.complete, "valid": r.valid,
         })
-    rows.sort(key=lambda d: d["pct"], reverse=True)
+    rows.sort(key=lambda d: (d["valid"], d["pct"]), reverse=True)
 
     if not rows:
         return None
 
     fig = go.Figure()
     for row in rows:
-        flag = "" if row["complete"] else " ⚠ INCOMPLETE"
+        flag = "" if row["valid"] else " ⚠ INELIGIBLE"
         code_pct = f"{row['code_m']/row['code_t']*100:.0f}%" if row["code_t"] else "n/a"
         annotation = (
             f"{row['pct']:.0f}% ({row['matched']}/{row['total']}) · "
             f"code {code_pct} · "
-            f"{row['passed']}/{row['queries']} pass · "
+            f"{row['passed']}/{row['scored']} pass · "
             f"{row['halluc']} halluc"
             + (f" · {row['errored']} err" if row['errored'] else "")
             + flag
@@ -284,10 +303,11 @@ def leaderboard(runs: list[Run], colors: dict[str, str]):
             f"run: {row['stem']}<br>"
             f"scored lines: {row['matched']} / {row['total']} ({row['pct']:.1f}%)<br>"
             f"code lines: {row['code_m']} / {row['code_t']} ({code_pct})<br>"
-            f"pass: {row['passed']} / {row['queries']}<br>"
+            f"pass: {row['passed']} / {row['scored']} scored queries<br>"
+            f"attempted: {row['attempted']}<br>"
             f"hallucinated: {row['halluc']}<br>"
             f"errored: {row['errored']}"
-            + ("" if row["complete"] else "<br><b>⚠ run did not complete</b>")
+            + ("" if row["valid"] else "<br><b>⚠ ineligible for ranking</b>")
         )
         fig.add_trace(go.Bar(
             x=[row["pct"]],
@@ -298,14 +318,14 @@ def leaderboard(runs: list[Run], colors: dict[str, str]):
             text=[annotation],
             textposition="outside",
             marker_color=colors[row["color_key"]],
-            marker_line_color="#c00" if not row["complete"] else "#fff",
-            marker_line_width=3 if not row["complete"] else 1,
+            marker_line_color="#c00" if not row["valid"] else "#fff",
+            marker_line_width=3 if not row["valid"] else 1,
             hovertext=[hover],
             hoverinfo="text",
         ))
 
     fig.update_layout(
-        title="Leaderboard · % of scored lines matched (blank lines excluded)",
+        title="Leaderboard · valid runs first; errors excluded from score",
         xaxis=dict(title="% of scored lines matched", range=[0, 190]),
         yaxis=dict(autorange="reversed", automargin=True),
         height=_chart_height(content_rows=len(rows), n_legend_entries=len(rows)),

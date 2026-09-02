@@ -106,6 +106,8 @@ def test_dump_records_full_provenance(mock_server, py_source, tmp_path):
     assert d["schema_version"] == DUMP_SCHEMA_VERSION
     assert d["benchmark_generation"] == current_generation()
     assert d["complete"] is True
+    assert d["valid"] is True
+    assert d["query_errors"] == 0
     assert d["queries_run"] == d["queries_planned"] == _answerable(py_source)
     assert d["aborted_reason"] is None
     assert d["corpus"] == "http_server"
@@ -113,13 +115,14 @@ def test_dump_records_full_provenance(mock_server, py_source, tmp_path):
     assert d["runtime_notes"] == "unit test, no KV quant"
     assert d["model_label"] == "Mock Model 4bit"
     assert d["sample_k"] == 16 and d["sample_seed"] == 42
+    assert d["primary_lines"] == 20
     assert d["scoring"] == {
         "relax_indent": False, "count_comments": True,
         "count_blank_lines": False, "pass_ratio": 0.4,
     }
     for key in ("temperature", "max_tokens", "timeout", "reasoning_effort",
                 "prefill_no_think", "use_max_completion_tokens", "stop",
-                "suppress_thinking", "min_code_lines"):
+                "suppress_thinking", "min_code_lines", "primary_lines"):
         assert key in d, f"missing provenance field: {key}"
 
 
@@ -205,6 +208,8 @@ def test_fail_fast_marks_dump_incomplete(mock_server, py_source, tmp_path):
     d = json.loads(read_text(dump))
     assert len(scores) == 2, "aborted after 2 consecutive errors"
     assert d["complete"] is False
+    assert d["valid"] is False
+    assert d["query_errors"] == 2
     assert d["queries_run"] == 2
     assert d["queries_planned"] == _answerable(py_source)
     assert "fail-fast" in d["aborted_reason"]
@@ -218,8 +223,11 @@ def test_no_fail_fast_runs_every_query(mock_server, py_source, tmp_path):
                            skip_preflight=True, fail_fast_after=None,
                            corpus_name="http_server")
     assert len(scores) == _answerable(py_source)
-    assert json.loads(read_text(dump))["complete"] is True, \
+    d = json.loads(read_text(dump))
+    assert d["complete"] is True, \
         "running every query is a complete run, even if all errored"
+    assert d["valid"] is False, "completed execution with errors is not a valid score"
+    assert d["query_errors"] == _answerable(py_source)
 
 
 def test_empty_response_is_error_not_fail(mock_server, py_source, tmp_path):

@@ -1,0 +1,28 @@
+# Primary fresh/generated recall corpus, approximately 64K tokens.
+# Regenerate/verify with: python tools/generate_novel_corpora.py [--check]
+
+[files]
+directory = "fixtures/novel"
+glob = "novel_64k.py"
+limit = 1
+
+[sample]
+k = 18
+seed = 42
+primary_lines = 48
+min_code_lines = 46
+functions = [
+  "needle_0000_58vataaa7b", "needle_0001_gzkv0gztwl",
+  "needle_0002_rzp71z3nm8", "needle_0003_fsir0oyvf8",
+  "needle_0004_pe3bu33q8m", "needle_0005_7pszx6fxma",
+  "needle_0006_jjdlfhix5v", "needle_0007_9lsj9hcqtt",
+  "needle_0008_6iwcngeuur", "needle_0009_wccekthxo0",
+  "needle_0010_4n4oqwau8u", "needle_0011_8nfb9csbmu",
+  "needle_0012_jn5x922icc", "needle_0013_mj7fga0ttj",
+  "needle_0014_th6pfw0nbo", "needle_0015_6zny5qpesv",
+  "needle_0016_3wl3pf72l5", "needle_0017_jd5ec1x2cy",
+]
+
+[scoring]
+count_comments = true
+relax_indent = false

@@ -96,15 +96,24 @@ def expected_queries(corpus_stem: str) -> int | None:
         return _EXPECTED_CACHE[corpus_stem]
     try:
         from bench.config import load_corpus
-        from bench.extract import load_source_glob, stratified_sample
+        from bench.extract import (
+            configure_primary_window, load_source_glob, stratified_sample,
+        )
 
         c = load_corpus(corpus_stem)
         src = load_source_glob(c.directory, c.glob, c.limit)
+        configure_primary_window(src, c.primary_lines)
         pool = src.targets
         if c.min_code_lines > 0:
             pool = [t for t in pool if t.code_line_count >= c.min_code_lines]
-        total_lines = src.text.count("\n") + 1
-        n = len(stratified_sample(pool, total_lines, k=c.sample_k, seed=c.sample_seed))
+        if c.sample_functions:
+            available = {target.name for target in pool}
+            if not set(c.sample_functions) <= available:
+                raise ValueError("configured target function is missing")
+            n = len(c.sample_functions)
+        else:
+            total_lines = src.text.count("\n") + 1
+            n = len(stratified_sample(pool, total_lines, k=c.sample_k, seed=c.sample_seed))
     except Exception:
         n = None
     _EXPECTED_CACHE[corpus_stem] = n
@@ -149,6 +158,13 @@ def result_state(path: Path, corpus_stem: str | None = None) -> tuple[bool, str]
             if want is not None and len(results) < want:
                 return False, f"legacy dump, only {len(results)}/{want} queries"
 
+    # Errors are not recall misses.  A run that attempted every query but got
+    # transport/context/empty-response failures must be rerun, not frozen into
+    # the benchmark matrix as a low-scoring model.
+    errored = sum(1 for result in results if result.get("error"))
+    if errored:
+        return False, f"invalid run ({errored}/{len(results)} queries errored)"
+
     # A complete result from an unknown/old prompt must be re-run. Schema v2
     # existed across multiple prompt generations, so schema_version alone
     # cannot establish comparability.
@@ -177,6 +193,12 @@ def result_state(path: Path, corpus_stem: str | None = None) -> tuple[bool, str]
             return False, (
                 "non-default scoring policy "
                 f"({actual_policy.description}; expected {expected_policy.description})"
+            )
+        actual_primary_lines = int(data.get("primary_lines", 20))
+        if actual_primary_lines != corpus.primary_lines:
+            return False, (
+                f"wrong primary-line window ({actual_primary_lines}; "
+                f"expected {corpus.primary_lines})"
             )
     return True, "complete"
 

@@ -70,8 +70,13 @@ every chart of a corpus, and **every chart is fully interactive**:
 
 ### 1. Leaderboard
 
-Horizontal bars sorted best → worst by total primary lines matched.
-Annotation on each bar: `<matched>/<total> lines · <P>/<N> pass · <H> halluc`.
+Horizontal bars sort valid runs by the percentage of primary lines matched.
+Errored queries are excluded from quality denominators because transport,
+context, and empty-response failures are not recall misses. Any run containing
+an error remains visible for diagnosis, outlined in red, marked **INELIGIBLE**,
+and sorted after valid runs. `run-missing.py` schedules it for rerunning.
+
+Annotation on each bar: `<percent> (<matched>/<total>) · <P>/<N> pass · <H> halluc`.
 
 This is the *who won* view. If you're glancing at one number, this is it.
 
@@ -103,21 +108,23 @@ How to read it:
 | bouncy / no trend | individual functions are easier or harder; depth isn't the bottleneck |
 
 **Important caveat.** This chart only stresses positional recall when the
-corpus is big enough to push the model past its "easy" zone. For a 14K-token
-file (`http_server`), a model with 128K context is barely warmed up — both
-qwen3.5 and qwen3.6 will look flat. To actually exercise long-context decay
-you need ~80K+ tokens in the prompt: run the `jquery` corpus.
+corpus is big enough to push the model past its "easy" zone. `http_server` and
+`jquery` are public code, so prior training may also inflate their scores. Use
+`novel_16k` as the short-context baseline and `novel_64k` / `novel_128k` to
+measure long-context decay without known-source memorization. Keep the public
+corpora as smoke and real-world controls, not the headline leaderboard.
 
 ## Grouping rule
 
-Runs are grouped by **corpus and scoring policy**, not model. The base grouping
-key is the set of file basenames in the dump's `files` field. The default
-strict/comments-counted policy keeps the plain corpus name; non-default
-policies receive a descriptive suffix. So:
+Runs are grouped by **corpus, primary-window length, and scoring policy**, not
+model. The base grouping key is the set of file basenames in the dump's
+`files` field. The default 20-line, strict/comments-counted policy keeps the
+plain corpus name; other contracts receive descriptive suffixes. So:
 
 - All runs against `fixtures/http_server.py` → `analysis/charts/http_server/`
 - All runs against `fixtures/jquery.js` → `analysis/charts/jquery/`
 - A run against `fixtures/foo.py + fixtures/bar.py` → its own group
+- A 48-line jQuery run → `analysis/charts/jquery__48-lines/`
 - Content-normalized jQuery runs →
   `analysis/charts/jquery__content-comments-no-blanks-pass-40pct/`
 

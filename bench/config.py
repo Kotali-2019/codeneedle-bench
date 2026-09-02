@@ -22,6 +22,8 @@ Corpus schema:
     [sample]
     k    = 16
     seed = 42
+    primary_lines = 20
+    functions = ["optional", "fixed", "target_names"]
 
     [scoring]
     count_comments = true         # comments/docstrings earn credit (default)
@@ -60,6 +62,11 @@ class CorpusConfig:
     limit: int | None
     sample_k: int
     sample_seed: int
+    primary_lines: int = 20
+    # Optional paired target cohort. When set, these exact functions are used
+    # instead of random sampling so differently sized corpora remain directly
+    # comparable.
+    sample_functions: list[str] | None = None
     # Scoring policy lives with the corpus, not the model: it describes what
     # the questions are worth, and must be identical across models to compare
     # them. Blank lines never earn credit and aren't configurable.
@@ -120,6 +127,19 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
 
     sample_raw = raw.get("sample") or {}
     scoring_raw = raw.get("scoring") or {}
+    sample_functions = sample_raw.get("functions")
+    if sample_functions is not None:
+        if (
+            not isinstance(sample_functions, list)
+            or not sample_functions
+            or not all(isinstance(name, str) and name for name in sample_functions)
+        ):
+            raise ValueError(f"{path}: [sample].functions must be a non-empty list of names")
+        if len(set(sample_functions)) != len(sample_functions):
+            raise ValueError(f"{path}: [sample].functions contains duplicate names")
+    primary_lines = int(sample_raw.get("primary_lines", 20))
+    if primary_lines < 20:
+        raise ValueError(f"{path}: [sample].primary_lines must be at least 20")
     return CorpusConfig(
         name=path.stem,
         directory=directory,
@@ -127,6 +147,8 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
         limit=files_raw.get("limit"),
         sample_k=int(sample_raw.get("k", 16)),
         sample_seed=int(sample_raw.get("seed", 42)),
+        primary_lines=primary_lines,
+        sample_functions=sample_functions,
         count_comments=bool(scoring_raw.get("count_comments", True)),
         relax_indent=bool(scoring_raw.get("relax_indent", False)),
         min_code_lines=int(sample_raw.get("min_code_lines", 0)),

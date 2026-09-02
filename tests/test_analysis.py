@@ -60,6 +60,19 @@ def test_complete_flag_true_is_done(rm, tmp_path):
     assert rm.result_state(p) == (True, "complete")
 
 
+def test_complete_run_with_query_error_is_not_done(rm, tmp_path):
+    p = tmp_path / "d.json"
+    d = _dump(complete=True)
+    d["results"].append({
+        "function": "broken", "passed": False, "error": "HTTP 500",
+        "primary_matched": 0, "primary_total": 10,
+    })
+    write_text(p, json.dumps(d))
+    done, why = rm.result_state(p)
+    assert done is False
+    assert "1/2 queries errored" in why
+
+
 def test_complete_flag_false_is_not_done(rm, tmp_path):
     p = tmp_path / "d.json"
     write_text(p, json.dumps(_dump(complete=False, queries_run=4,
@@ -119,9 +132,20 @@ def test_nondefault_scoring_policy_does_not_fill_default_matrix_cell(rm, tmp_pat
     assert "non-default scoring policy" in why
 
 
+def test_wrong_primary_window_does_not_fill_matrix_cell(rm, tmp_path):
+    p = tmp_path / "d.json"
+    write_text(p, json.dumps(_dump(complete=True, primary_lines=20)))
+    done, why = rm.result_state(p, "novel_16k")
+    assert done is False
+    assert "wrong primary-line window (20; expected 48)" in why
+
+
 def test_expected_queries_matches_real_corpora(rm):
     assert rm.expected_queries("http_server") == 11
     assert rm.expected_queries("jquery") == 16
+    assert rm.expected_queries("novel_16k") == 18
+    assert rm.expected_queries("novel_64k") == 18
+    assert rm.expected_queries("novel_128k") == 18
     assert rm.expected_queries("no_such_corpus") is None
 
 
@@ -229,6 +253,13 @@ def test_scoring_overrides_get_a_separate_dashboard(viz, tmp_path):
     assert groups["jquery__content-comments-no-blanks-pass-40pct"][0].model == "content"
 
 
+def test_primary_windows_get_separate_dashboards(viz, tmp_path):
+    _run(viz, tmp_path, "twenty", 4)
+    _run(viz, tmp_path, "forty-eight", 4, primary_lines=48)
+    groups = viz.load_runs(tmp_path)
+    assert set(groups) == {"jquery", "jquery__48-lines"}
+
+
 def test_missing_scoring_policy_is_not_charted(viz, tmp_path, capsys):
     p = _run(viz, tmp_path, "unknown-policy", 4)
     data = json.loads(read_text(p))
@@ -239,7 +270,7 @@ def test_missing_scoring_policy_is_not_charted(viz, tmp_path, capsys):
 
 
 def test_leaderboard_ranks_by_percentage_not_volume(viz, tmp_path):
-    """The core charting bug: an aborted run must not sort last on volume.
+    """Valid runs with different sample sizes rank by rate, not volume.
 
     `short` answered 4 questions at 80%; `full` answered 16 at 50%. Ranking by
     raw matched lines puts short (32) far below full (80) — by percentage,
@@ -247,7 +278,7 @@ def test_leaderboard_ranks_by_percentage_not_volume(viz, tmp_path):
     """
     _run(viz, tmp_path, "full", 16, total_per=10, matched_per=5)
     _run(viz, tmp_path, "short", 4, total_per=10, matched_per=8,
-         complete=False, queries_run=4, queries_planned=16)
+         complete=True, queries_run=4, queries_planned=4)
     runs = viz.load_runs(tmp_path)["jquery"]
     fig = viz.leaderboard(runs, viz.assign_colors(runs))
     order = [t.name for t in fig.data]
@@ -266,6 +297,31 @@ def test_leaderboard_outlines_incomplete_runs(viz, tmp_path):
     fig = viz.leaderboard(runs, viz.assign_colors(runs))
     marks = {t.name: t.marker.line.color for t in fig.data}
     assert marks[[n for n in marks if "INCOMPLETE" in n][0]] == "#c00"
+
+
+def test_leaderboard_excludes_errors_from_quality_and_marks_run_ineligible(viz, tmp_path):
+    _run(viz, tmp_path, "valid", 2, total_per=10, matched_per=5)
+    p = _run(viz, tmp_path, "errored", 1, total_per=10, matched_per=10)
+    data = json.loads(read_text(p))
+    data["complete"] = True
+    data["results"].append({
+        "function": "broken", "passed": False, "error": "HTTP 500",
+        "primary_matched": 0, "primary_total": 10,
+        "code_matched": 0, "code_total": 10,
+        "hallucinated": 0, "bonus_matched": 0,
+    })
+    write_text(p, json.dumps(data))
+
+    runs = viz.load_runs(tmp_path)["jquery"]
+    fig = viz.leaderboard(runs, viz.assign_colors(runs))
+    order = [trace.name for trace in fig.data]
+    errored = next(trace for trace in fig.data if "errored" in trace.name)
+
+    assert order[0] == "valid", "valid runs must rank ahead of errored runs"
+    assert errored.x[0] == pytest.approx(100.0), "errors are not zero-score queries"
+    assert "ERRORS 1" in errored.name
+    assert errored.marker.line.color == "#c00"
+    assert "1 err" in errored.text[0]
 
 
 def test_per_function_chart_uses_percentage_axis(viz, tmp_path):

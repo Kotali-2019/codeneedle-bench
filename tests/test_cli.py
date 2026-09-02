@@ -108,6 +108,14 @@ def test_extract_show_unknown_function(python_bin, repo_root):
     assert "not found" in r.stdout
 
 
+def test_fixed_target_corpus_rejects_sampling_overrides(python_bin, repo_root):
+    r = run_cli(
+        python_bin, repo_root, "extract", "--corpus", "novel_16k", "-k", "1"
+    )
+    assert r.returncode != 0
+    assert "fixed [sample].functions" in (r.stdout + r.stderr)
+
+
 # --- rescore --------------------------------------------------------------
 
 

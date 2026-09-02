@@ -160,6 +160,7 @@ def test_every_corpus_config_loads(repo_root):
         cfg = load_corpus(c.stem)
         assert cfg.directory.is_dir(), f"{c.name}: directory missing"
         assert cfg.sample_k > 0
+        assert cfg.primary_lines >= 20
         assert cfg.relax_indent is False, (
             f"{c.name}: shipped comparison corpora must score every model strictly"
         )
@@ -172,3 +173,18 @@ def test_model_config_cannot_set_scoring_policy(tmp_path):
     write_text(p, 'name = "mock"\nrelax_indent = true\n')
     with pytest.raises(ValueError, match="scoring policy.*corpus config"):
         load_model_from_file(p)
+
+
+def test_corpus_primary_window_cannot_be_smaller_than_extractor_floor(tmp_path):
+    from bench.config import load_corpus
+
+    p = tmp_path / "bad-window.toml"
+    write_text(p, '''
+[files]
+directory = "fixtures"
+glob = "*.py"
+[sample]
+primary_lines = 19
+''')
+    with pytest.raises(ValueError, match="primary_lines must be at least 20"):
+        load_corpus(p)

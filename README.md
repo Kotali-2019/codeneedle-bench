@@ -197,6 +197,7 @@ limit     = 1            # optional cap on matched files (sorted lexically)
 [sample]
 k              = 16      # number of functions to test
 seed           = 42
+primary_lines  = 20      # widen for harder recall (novel_* uses 48)
 min_code_lines = 0       # optional: skip prose-dominated targets
 
 [scoring]
@@ -205,8 +206,30 @@ relax_indent   = false   # strict verbatim matching for every model
 ```
 
 Shipped:
-- `http_server` — single ~50KB Python file, fits any context, fast iteration
-- `jquery` — ~280KB / ~80K-token JS, closest to the video's setup (needs ≥100K loaded context)
+- `novel_16k`, `novel_64k`, `novel_128k` — deterministic generated Python
+  with opaque identifiers/constants; these are the primary model-quality corpora
+- `http_server` — public Python standard-library code; fast smoke/control corpus
+- `jquery` — public ~280KB / ~80K-token JS; real-world long-context control
+
+The public corpora are useful controls but may exist in model training data.
+Do not treat them as the headline leaderboard. The novel corpora are generated
+from recorded seeds. The same 18 high-entropy, 48-line target functions appear
+at matched relative positions in every size while distractor volume grows. Each
+has a similarly named neighboring decoy, and the targets are split evenly over
+three independent seeds. This makes the suite harder while keeping
+context-length comparisons paired.
+
+Regenerate or verify them deterministically:
+
+```bash
+python3 tools/generate_novel_corpora.py
+python3 tools/generate_novel_corpora.py --check
+```
+
+Their paired target names, full hashes, sizes, and function counts are recorded
+in `fixtures/novel/manifest.json`; every result dump also records the exact
+corpus hash. Rotate the generator seed/version for future model generations
+once the checked-in fixtures may have entered training data.
 
 If `glob` matches multiple files, they're concatenated with comment-marker
 headers (`# ====== path ======` / `// ====== path ======`) so the model sees
@@ -330,7 +353,7 @@ Per-function diff uses colors matching the video:
 - **gray**       — matched line (expected + produced at correct position)
 - **orange**     — expected but missing from the output
 - **yellow**     — hallucinated / mangled line
-- **blue/cyan**  — extra correct lines past the primary 20 (bonus)
+- **blue/cyan**  — extra correct lines past the configured primary window (bonus)
 - **dim**        — correct, but not eligible for credit (see below)
 
 Pass threshold per function: **≥ 40% of the scored lines matched**. On a
@@ -338,12 +361,13 @@ Pass threshold per function: **≥ 40% of the scored lines matched**. On a
 
 ### What counts toward a score
 
-A 20-line window is rarely 20 lines of code. In the shipped corpora:
+A recall window is rarely all code. In the shipped corpora:
 
 | corpus | code | blank | comment | docstring |
 |---|---:|---:|---:|---:|
 | `http_server` | 40% | 17% | 5% | 38% |
 | `jquery`      | 63% | 19% | 18% | — |
+| `novel_*`     | 96% | 0% | 2% | 2% |
 
 So the policy matters:
 
@@ -376,7 +400,10 @@ python3 bench.py rescore results/http_server__gpt-5.5.json --corpus http_server 
 
 A run that fail-fasts records `"complete": false` plus the query counts. Charts
 label it **⚠ INCOMPLETE** and outline the bar in red, and `run-missing.py`
-re-runs it instead of treating the file's existence as success. The leaderboard
+re-runs it instead of treating the file's existence as success. A run that
+attempted every query but contains request errors is likewise invalid and must
+be rerun. Leaderboard quality percentages exclude errored queries, clearly mark
+the whole run ineligible, and rank it after valid runs. The leaderboard
 plots **percentages**, not raw line counts, so a run with a smaller denominator
 isn't misread as a worse model.
 

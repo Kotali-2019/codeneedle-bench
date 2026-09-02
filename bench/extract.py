@@ -40,22 +40,28 @@ class FunctionTarget:
     # signature, so no prompt could distinguish them. Such targets are
     # unanswerable and get excluded from sampling.
     ambiguous: bool = False
+    # Corpus configs may widen the recall window for harder suites. Extraction
+    # still uses MIN_BODY_LINES as its universal floor; configure_primary_window
+    # removes functions that are too short before sampling.
+    primary_line_count: int = MIN_BODY_LINES
 
     @property
     def primary_lines(self) -> list[str]:
-        return self.body_lines[:MIN_BODY_LINES]
+        return self.body_lines[:self.primary_line_count]
 
     @property
     def bonus_lines(self) -> list[str]:
-        return self.body_lines[MIN_BODY_LINES:MIN_BODY_LINES + BONUS_CAP]
+        start = self.primary_line_count
+        return self.body_lines[start:start + BONUS_CAP]
 
     @property
     def primary_kinds(self) -> list[str]:
-        return self._kinds()[:MIN_BODY_LINES]
+        return self._kinds()[:self.primary_line_count]
 
     @property
     def bonus_kinds(self) -> list[str]:
-        return self._kinds()[MIN_BODY_LINES:MIN_BODY_LINES + BONUS_CAP]
+        start = self.primary_line_count
+        return self._kinds()[start:start + BONUS_CAP]
 
     def _kinds(self) -> list[str]:
         """Kinds for every body line, falling back to a content-only guess."""
@@ -87,6 +93,20 @@ class Source:
         if len(self.files) == 1:
             return self.files[0].name
         return f"{len(self.files)} files from {self.files[0].parent}"
+
+
+def configure_primary_window(source: Source, primary_lines: int) -> Source:
+    """Apply a corpus's primary-window size and drop targets too short for it."""
+    if primary_lines < MIN_BODY_LINES:
+        raise ValueError(
+            f"primary_lines must be at least {MIN_BODY_LINES}, got {primary_lines}"
+        )
+    source.targets = [
+        target for target in source.targets if len(target.body_lines) >= primary_lines
+    ]
+    for target in source.targets:
+        target.primary_line_count = primary_lines
+    return source
 
 
 def language_of(path: Path) -> str:

@@ -60,7 +60,9 @@ Supported extensions: `.js`, `.mjs`, `.cjs` (esprima), `.py` (`ast`).
 |---|---|---|
 | `k` | 16 | how many functions to test per run. If the corpus has fewer than `k` functions with ≥ 20 body lines, all of them are tested. Selection is stratified by file position so you cover the whole file, not just the start. |
 | `seed` | 42 | RNG seed for the stratified sampler. Same seed + same corpus = same target functions across runs. Keep this fixed when comparing models so each model sees the same questions. |
-| `min_code_lines` | 0 | drop targets with fewer than N *code* lines in their 20-line window. `0` keeps everything. Raise it to exclude docstring-dominated functions — `http_server.log_message` has 1 code line in its window, so its score is almost entirely prose recall. Changing this changes which functions are tested, so re-run every model when you do. |
+| `primary_lines` | 20 | number of body lines the model must reproduce. Values below the extractor's 20-line floor are rejected. The fresh `novel_*` suite uses 48 to avoid short-answer ceiling effects. |
+| `functions` | — | optional fixed list of function names. When present it takes precedence over `k`/`seed`. Use the same list across differently sized corpora for paired context-length comparisons. |
+| `min_code_lines` | 0 | drop targets with fewer than N *code* lines in their configured window. `0` keeps everything. Raise it to exclude docstring-dominated functions — `http_server.log_message` has 1 code line in its window, so its score is almost entirely prose recall. Changing this changes which functions are tested, so re-run every model when you do. |
 
 ### `[scoring]`
 
@@ -92,6 +94,16 @@ cp configs/corpora/jquery.toml configs/corpora/three.toml
 python3 bench.py extract --corpus three           # see what would be tested
 python3 bench.py extract --corpus three --all     # see every extractable function
 ```
+
+The shipped `novel_16k`, `novel_64k`, and `novel_128k` configs are the primary
+model-quality suite. Their deterministic fixtures come from
+`tools/generate_novel_corpora.py`; use `--check` to verify that the checked-in
+files match generator version, seed, and hashes in `fixtures/novel/manifest.json`.
+The suite uses 18 paired 48-line targets from three seeds, each beside a
+similarly named decoy, to reduce the ceiling effect seen with short public-code
+queries.
+`http_server` and `jquery` remain public-code controls because models may have
+seen their source during training.
 
 ---
 

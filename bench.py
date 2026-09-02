@@ -29,7 +29,7 @@ DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 
 def _resolve_source(args: argparse.Namespace):
     """Return (Source, CorpusConfig|None) from --corpus or --file."""
-    from bench.extract import load_source_glob
+    from bench.extract import configure_primary_window, load_source_glob
     from bench.runner import source_from_single_file
 
     if getattr(args, "corpus", None):
@@ -37,6 +37,7 @@ def _resolve_source(args: argparse.Namespace):
 
         corpus = load_corpus(args.corpus)
         src = load_source_glob(corpus.directory, corpus.glob, corpus.limit)
+        configure_primary_window(src, corpus.primary_lines)
         return src, corpus
     if getattr(args, "file", None):
         return source_from_single_file(Path(args.file)), None
@@ -74,6 +75,18 @@ def cmd_extract(args: argparse.Namespace) -> int:
 
     source, corpus = _resolve_source(args)
 
+    if (
+        corpus is not None
+        and corpus.sample_functions
+        and not args.all
+        and not args.show
+        and (args.k is not None or args.seed is not None)
+    ):
+        raise SystemExit(
+            "error: this corpus uses fixed [sample].functions; "
+            "k/seed cannot change that paired cohort"
+        )
+
     if args.show:
         match = next((t for t in source.targets if t.name == args.show), None)
         if match is None:
@@ -93,8 +106,9 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 0
 
     total_lines = source.text.count("\n") + 1
+    window_lines = corpus.primary_lines if corpus else MIN_BODY_LINES
     print(
-        f"{len(source.targets)} function(s) with ≥{MIN_BODY_LINES} body lines across "
+        f"{len(source.targets)} function(s) with ≥{window_lines} body lines across "
         f"{len(source.files)} file(s) ({len(source.text):,} chars, {total_lines:,} lines)"
     )
     all_kinds = [k for t in source.targets for k in t.primary_kinds]
@@ -127,6 +141,16 @@ def cmd_extract(args: argparse.Namespace) -> int:
     seed = args.seed if args.seed is not None else (corpus.sample_seed if corpus else 42)
     if args.all:
         chosen = pool
+    elif corpus is not None and corpus.sample_functions:
+        wanted = set(corpus.sample_functions)
+        chosen = [target for target in pool if target.name in wanted]
+        missing = wanted - {target.name for target in chosen}
+        if missing:
+            raise SystemExit(
+                "error: configured [sample].functions not found: "
+                + ", ".join(sorted(missing))
+            )
+        print(f"configured paired sample of {len(chosen)}:")
     else:
         chosen = stratified_sample(pool, total_lines, k=k, seed=seed)
         print(f"stratified sample of {len(chosen)}:")
@@ -146,6 +170,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     from bench.runner import run_benchmark
 
     source, corpus = _resolve_source(args)
+
+    if (
+        corpus is not None
+        and corpus.sample_functions
+        and not args.function
+        and (args.k is not None or args.seed is not None)
+    ):
+        raise SystemExit(
+            "error: this corpus uses fixed [sample].functions; use --function "
+            "to run an explicit subset"
+        )
 
     if not args.model:
         raise SystemExit("error: --model is required (a name in configs/models/, a path, or a raw model id)")
@@ -192,6 +227,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             limit=1,
             sample_k=k,
             sample_seed=seed,
+            primary_lines=20,
         )
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         dump_path = auto_dump_path(synthetic_corpus, model, DEFAULT_RESULTS_DIR)
@@ -211,7 +247,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.count_comments:
         count_comments = True
 
-    fn_filter = args.function if args.function else None
+    fn_filter = (
+        args.function if args.function
+        else (corpus.sample_functions if corpus is not None else None)
+    )
     scores = run_benchmark(
         source=source,
         cfg=model.client,
@@ -279,6 +318,13 @@ def cmd_rescore(args: argparse.Namespace) -> int:
                 "error: dump references a missing or multi-file corpus; "
                 "pass --corpus NAME or --file PATH to re-locate it"
             )
+
+    from bench.extract import configure_primary_window
+
+    primary_lines = int(dump.get(
+        "primary_lines", corpus.primary_lines if args.corpus else 20
+    ))
+    configure_primary_window(source, primary_lines)
 
     # Honor the original dump's scoring policy unless overridden on the CLI.
     scoring = dump.get("scoring") or {}
@@ -350,8 +396,10 @@ def build_parser() -> argparse.ArgumentParser:
     src_grp = p_ex.add_mutually_exclusive_group()
     src_grp.add_argument("--corpus", help="corpus config name (configs/corpora/<name>.toml) or path")
     src_grp.add_argument("--file", help="single source file")
-    p_ex.add_argument("-k", type=int, default=None, help="override corpus sample.k")
-    p_ex.add_argument("--seed", type=int, default=None, help="override corpus sample.seed")
+    p_ex.add_argument("-k", type=int, default=None,
+                      help="override corpus sample.k (stratified corpora only)")
+    p_ex.add_argument("--seed", type=int, default=None,
+                      help="override corpus sample.seed (stratified corpora only)")
     p_ex.add_argument("--all", action="store_true", help="list every extracted function, not a sample")
     p_ex.add_argument("--show", metavar="NAME", help="print expected primary+bonus lines for one function")
     p_ex.add_argument(
@@ -378,8 +426,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--temperature", type=float, default=None)
     p_run.add_argument("--max-tokens", type=int, default=None)
     p_run.add_argument("--timeout", type=float, default=None)
-    p_run.add_argument("-k", type=int, default=None, help="overrides corpus.sample.k")
-    p_run.add_argument("--seed", type=int, default=None)
+    p_run.add_argument("-k", type=int, default=None,
+                       help="overrides corpus.sample.k (stratified corpora only)")
+    p_run.add_argument("--seed", type=int, default=None,
+                       help="overrides corpus.sample.seed (stratified corpora only)")
     p_run.add_argument(
         "--dump", default=None,
         help="JSON path for full results (default: results/<corpus>__<model>.json)",

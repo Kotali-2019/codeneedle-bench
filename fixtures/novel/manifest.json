@@ -1,0 +1,77 @@
+{
+  "corpora": {
+    "novel_128k": {
+      "actual_chars": 448063,
+      "approx_tokens": 128000,
+      "functions": 177,
+      "lines": 10722,
+      "sha256": "373ff7468825bbdff5cabecdbc9d10a5ed3796ae4e4a4cb6fe6c355394708960",
+      "target_chars": 448000
+    },
+    "novel_16k": {
+      "actual_chars": 58084,
+      "approx_tokens": 16000,
+      "functions": 19,
+      "lines": 1400,
+      "sha256": "9ad85bf2faec24e7fa4856fe8de96621fe788231fe0093d564c56db174794d53",
+      "target_chars": 56000
+    },
+    "novel_64k": {
+      "actual_chars": 225939,
+      "approx_tokens": 64000,
+      "functions": 87,
+      "lines": 5412,
+      "sha256": "25f5000abfdc4e36ebceaaca40dd55d75bd26d7028b2f1180c1ba4284f9f9334",
+      "target_chars": 224000
+    }
+  },
+  "decoys_per_target": 1,
+  "generator_version": "novel-recall-v3",
+  "paired_targets": [
+    "needle_0000_58vataaa7b",
+    "needle_0001_gzkv0gztwl",
+    "needle_0002_rzp71z3nm8",
+    "needle_0003_fsir0oyvf8",
+    "needle_0004_pe3bu33q8m",
+    "needle_0005_7pszx6fxma",
+    "needle_0006_jjdlfhix5v",
+    "needle_0007_9lsj9hcqtt",
+    "needle_0008_6iwcngeuur",
+    "needle_0009_wccekthxo0",
+    "needle_0010_4n4oqwau8u",
+    "needle_0011_8nfb9csbmu",
+    "needle_0012_jn5x922icc",
+    "needle_0013_mj7fga0ttj",
+    "needle_0014_th6pfw0nbo",
+    "needle_0015_6zny5qpesv",
+    "needle_0016_3wl3pf72l5",
+    "needle_0017_jd5ec1x2cy"
+  ],
+  "primary_lines": 48,
+  "seed": 20260901,
+  "target_seed_by_name": {
+    "needle_0000_58vataaa7b": 20260901,
+    "needle_0001_gzkv0gztwl": 20260901,
+    "needle_0002_rzp71z3nm8": 20260901,
+    "needle_0003_fsir0oyvf8": 20260901,
+    "needle_0004_pe3bu33q8m": 20260901,
+    "needle_0005_7pszx6fxma": 20260901,
+    "needle_0006_jjdlfhix5v": 20260917,
+    "needle_0007_9lsj9hcqtt": 20260917,
+    "needle_0008_6iwcngeuur": 20260917,
+    "needle_0009_wccekthxo0": 20260917,
+    "needle_0010_4n4oqwau8u": 20260917,
+    "needle_0011_8nfb9csbmu": 20260917,
+    "needle_0012_jn5x922icc": 20261003,
+    "needle_0013_mj7fga0ttj": 20261003,
+    "needle_0014_th6pfw0nbo": 20261003,
+    "needle_0015_6zny5qpesv": 20261003,
+    "needle_0016_3wl3pf72l5": 20261003,
+    "needle_0017_jd5ec1x2cy": 20261003
+  },
+  "target_seeds": [
+    20260901,
+    20260917,
+    20261003
+  ]
+}

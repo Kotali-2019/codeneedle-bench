@@ -20,7 +20,9 @@ from .scoring_policy import ScoringPolicy
 # Bumped when the dump layout changes in a way consumers must notice.
 # 2 = added completeness + provenance + code/prose breakdown.
 # 3 = added explicit prompt/scorer generation metadata.
-DUMP_SCHEMA_VERSION = 3
+# 4 = added explicit run validity and query-error counts.
+# 5 = records the configured primary-line window.
+DUMP_SCHEMA_VERSION = 5
 
 
 # Keeping the file FIRST and the tiny task suffix LAST is deliberate:
@@ -162,7 +164,8 @@ def run_benchmark(
         flush=True,
     )
     print(
-        f"Extracted {len(source.targets)} named functions with ≥20 body lines",
+        f"Extracted {len(source.targets)} named functions with "
+        f"≥{len(source.targets[0].primary_lines) if source.targets else MIN_BODY_LINES} body lines",
         flush=True,
     )
 
@@ -207,8 +210,13 @@ def run_benchmark(
                 "(see the WARNING above) — nothing to run"
             )
         raise SystemExit(
-            "error: the corpus has no named functions with ≥20 body lines — nothing to run"
+            "error: the corpus has no named functions long enough for the configured "
+            "primary-line window — nothing to run"
         )
+
+    primary_window_lines = len(chosen[0].primary_lines)
+    if any(len(target.primary_lines) != primary_window_lines for target in chosen):
+        raise ValueError("all selected targets must use the same primary-line window")
 
     print(f"Selected {len(chosen)} target function(s):", flush=True)
     thin = []
@@ -229,7 +237,7 @@ def run_benchmark(
             flush=True,
         )
         for nm, n in thin:
-            print(f"      {nm} ({n} code line(s) of {MIN_BODY_LINES})", flush=True)
+            print(f"      {nm} ({n} code line(s) of {primary_window_lines})", flush=True)
         print(
             "    Use --no-comments to score code only, or set "
             "[sample] min_code_lines in the corpus config to exclude them.",
@@ -281,6 +289,7 @@ def run_benchmark(
         if not dump_path:
             return
         dump_path.parent.mkdir(parents=True, exist_ok=True)
+        query_errors = sum(1 for score in scores if score.error)
         payload = {
         "schema_version": DUMP_SCHEMA_VERSION,
         GENERATION_FIELD: current_generation(),
@@ -294,6 +303,16 @@ def run_benchmark(
         "complete": aborted_reason is None,
         "queries_planned": len(chosen),
         "queries_run": len(scores),
+        "query_errors": query_errors,
+        # A run may finish every planned request yet still contain transport,
+        # context, or empty-response errors.  That is complete execution but
+        # not a valid model-quality measurement.
+        "valid": (
+            not in_progress
+            and aborted_reason is None
+            and len(scores) == len(chosen)
+            and query_errors == 0
+        ),
         "aborted_reason": aborted_reason,
         # Request shape — everything that changes what the model saw.
         "model": cfg.model,
@@ -311,6 +330,7 @@ def run_benchmark(
         "sample_k": k,
         "sample_seed": seed,
         "function_filter": function_filter,
+        "primary_lines": primary_window_lines,
         "min_code_lines": min_code_lines,
         "scoring": ScoringPolicy(
             relax_indent=relax_indent,
