@@ -1,6 +1,8 @@
 # Positional Recall Benchmark
 
-Reproduces the benchmark from the YouTube video (see `benchmark_plan.md`):
+**A long-context code retrieval and reproduction benchmark.**
+
+CodeNeedle reproduces the benchmark from the YouTube video (see `benchmark_plan.md`):
 stuff a large source corpus into an LLM's context, then ask it to reproduce
 the first N lines of specific named functions verbatim. Measures positional
 recall under long context, not just named-entity lookup.
