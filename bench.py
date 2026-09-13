@@ -183,7 +183,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     ):
         raise SystemExit(
             "error: this corpus uses fixed [sample].functions; use --function "
-            "to run an explicit subset"
+            "to run an explicit subset, or --function all to run every extracted "
+            "function"
         )
 
     if not args.model:
@@ -255,6 +256,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         args.function if args.function
         else (corpus.sample_functions if corpus is not None else None)
     )
+    # Expand --function all to every extracted function name.
+    if fn_filter == ["all"] and source is not None:
+        fn_filter = [t.name for t in source.targets]
     scores = run_benchmark(
         source=source,
         cfg=model.client,
@@ -393,12 +397,20 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         lang_tag = src.language
         dump_path = DEFAULT_RESULTS_DIR / f"{model.name}__all-{lang_tag}.json"
 
+        # Expand --function all to every extracted function name for this corpus.
+        fn_filter = (
+            args.function if args.function else None
+        )
+        if fn_filter == ["all"]:
+            fn_filter = [t.name for t in src.targets]
+
         scores = run_benchmark(
             source=src,
             cfg=model.client,
             k=k,
             seed=seed,
             dump_path=dump_path,
+            function_filter=fn_filter,
             suppress_thinking=suppress_thinking,
             skip_preflight=args.skip_preflight,
             fail_fast_after=None if args.no_fail_fast else args.fail_fast_after,
@@ -613,7 +625,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dump", default=None,
         help="JSON path for full results (default: results/<corpus>__<model>.json)",
     )
-    p_run.add_argument("--function", action="append", help="repeatable; overrides sampling")
+    p_run.add_argument(
+        "--function", action="append",
+        help="repeatable; overrides sampling. Use 'all' to run every extracted "
+             "function in the corpus (shorthand for listing them all).",
+    )
     p_run.add_argument("--think", action="store_true", help="allow chain-of-thought (default: suppress)")
     p_run.add_argument(
         "--skip-preflight", action="store_true",

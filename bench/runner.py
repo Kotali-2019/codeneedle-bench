@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,36 @@ from .scoring_policy import ScoringPolicy
 
 
 # Bumped when the dump layout changes in a way consumers must notice.
+
+# Set to True by the SIGINT handler so the run loop can break cleanly instead
+# of raising a traceback. Checked after each query so the current model call
+# is allowed to finish before we stop.
+_aborted: bool = False
+
+
+def _install_interrupt_handler() -> None:
+    """Install a SIGINT handler that sets _aborted so the run loop exits
+    gracefully with a message instead of a KeyboardInterrupt traceback.
+    """
+    def _handler(_signum: int, _frame) -> None:
+        global _aborted
+        _aborted = True
+    signal.signal(signal.SIGINT, _handler)
+
+
+def _check_aborted(i: int, total: int) -> bool:
+    """Return True and print a clean message if the user hit Ctrl+C.
+    Call this once per loop iteration after the model response is in.
+    """
+    if not _aborted:
+        return False
+    remaining = total - i
+    print(
+        f"\n⚠ interrupted after {i}/{total} queries"
+        + (f" ({remaining} remaining)" if remaining else ""),
+        flush=True,
+    )
+    return True
 # 2 = added completeness + provenance + code/prose breakdown.
 # 3 = added explicit prompt/scorer generation metadata.
 # 4 = added explicit run validity and query-error counts.
@@ -275,6 +306,8 @@ def run_benchmark(
             print("Fix the server-side error or pass --skip-preflight to push past this check.", flush=True)
             raise SystemExit(2)
 
+    _install_interrupt_handler()
+
     scores: list[FunctionScore] = []
     runs: list[_Run] = []
     consecutive_errors = 0
@@ -426,6 +459,10 @@ def run_benchmark(
 
         # Persist what we have before starting the next (possibly long) query.
         _write_dump(in_progress=True)
+
+        if _check_aborted(i, len(chosen)):
+            aborted_reason = "user interrupt (Ctrl+C)"
+            break
 
         # Fail-fast: if N queries in a row error, the rest will too. Bail.
         if score_error:
