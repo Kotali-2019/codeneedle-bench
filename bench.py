@@ -366,12 +366,6 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         model.client.timeout = args.timeout
     suppress_thinking = model.suppress_thinking and not args.think
 
-    relax_indent = model.relax_indent
-    if args.relax_indent:
-        relax_indent = True
-    if args.strict_indent:
-        relax_indent = False
-
     all_scores = []
     corpus_results = []
     any_failure = False
@@ -386,6 +380,14 @@ def cmd_run_all(args: argparse.Namespace) -> int:
 
         k = args.k if args.k is not None else corpus.sample_k
         seed = args.seed if args.seed is not None else corpus.sample_seed
+
+        # Scoring policy belongs to the corpus so every model is judged by the
+        # same rules. CLI flags are explicit one-run overrides.
+        relax_indent = corpus.relax_indent
+        if args.relax_indent:
+            relax_indent = True
+        if args.strict_indent:
+            relax_indent = False
 
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         lang_tag = src.language
