@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import io
 import re
 import sys
 import time
@@ -338,12 +339,29 @@ def dashboard(metrics_text: str) -> Table:
 def dashboard_with_model(metrics_text: str, base: str) -> Group:
     # Render the title and model name as part of the live frame (not via
     # console.print, which would append a new line to the terminal on every
-    # refresh).
+    # refresh). Header lines are padded to the table's width so they stay
+    # centered over the table, not over the whole terminal.
+    table = dashboard(metrics_text)
+
+    # Measure the rendered table width (via a throwaway console writing to
+    # a buffer) so the header lines center over the table, not the terminal.
+    probe = Console(file=io.StringIO(), width=10**6)
+    probe.print(table)
+    width = max(
+        (len(line) for line in probe.file.getvalue().splitlines() if line.strip()),
+        default=0,
+    )
+
+    def centered(line: str, style: str = None) -> Text:
+        pad_left = max((width - len(line)) // 2, 0)
+        pad_right = max(width - len(line) - pad_left, 0)
+        return Text(" " * pad_left + line + " " * pad_right, style=style)
+
     model = get_serving_model(base)
     return Group(
-        Text("vLLM Runtime Dashboard", justify="center"),
-        Text(model, style="green", justify="center"),
-        dashboard(metrics_text),
+        centered("vLLM Runtime Dashboard"),
+        centered(model, "green"),
+        table,
     )
 
 
