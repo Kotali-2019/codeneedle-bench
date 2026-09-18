@@ -112,20 +112,6 @@ def dashboard(metrics_text: str) -> Table:
         "vllm:generation_tokens_total",
     )
 
-    prefix_hits = first(
-        metrics_text,
-        "vllm:prefix_cache_hits_total",
-    )
-    prefix_queries = first(
-        metrics_text,
-        "vllm:prefix_cache_queries_total",
-    )
-
-    hit_rate = (
-        prefix_hits
-        / max(prefix_queries, 1)
-    ) * 100
-
     #
     # Token-level prefix cache share: fraction of prompt tokens the
     # server did not have to re-read (cached KV reuse).
@@ -289,11 +275,6 @@ def dashboard(metrics_text: str) -> Table:
     table.add_row(
         "KV Capacity",
         f"{kv_capacity} tokens",
-    )
-
-    table.add_row(
-        "Prefix Cache Hit",
-        f"{hit_rate:.1f}%",
     )
 
     table.add_row(
