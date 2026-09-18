@@ -10,7 +10,6 @@ from rich.live import Live
 from rich.table import Table
 
 console = Console(force_terminal=True)
-RESET = "\x1b[0m"
 
 # KV usage color thresholds, expressed as the vLLM metric value (0-1).
 KV_GREEN = 0.80
@@ -77,11 +76,13 @@ def cache_tokens(text: str) -> str:
 
 
 def kv_cache_color(value: float) -> str:
+    # Rich markup color name (stripped before width measurement, unlike raw
+    # ANSI escapes, which would shift the table's right border).
     if value >= KV_RED:
-        return "\x1b[31m"   # red: critical / nearly full
+        return "red"      # critical / nearly full
     if value >= KV_YELLOW:
-        return "\x1b[33m"   # yellow: medium / high usage
-    return "\x1b[32m"       # green: normal / healthy usage
+        return "yellow"   # medium / high usage
+    return "green"        # normal / healthy usage
 
 
 def dashboard(metrics_text: str) -> Table:
@@ -269,7 +270,7 @@ def dashboard(metrics_text: str) -> Table:
 
     table.add_row(
         "KV Cache",
-        f"{kv_capacity_color}{kv_usage:.1f}% ({kv_capacity} tokens){RESET}",
+        f"[{kv_capacity_color}]{kv_usage:.1f}% ({kv_capacity} tokens)[/]",
     )
 
     table.add_row(
