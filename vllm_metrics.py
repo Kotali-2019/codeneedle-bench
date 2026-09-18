@@ -5,9 +5,10 @@ import sys
 import time
 
 import requests
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
+from rich.text import Text
 
 console = Console(force_terminal=True)
 
@@ -248,9 +249,7 @@ def dashboard(metrics_text: str) -> Table:
         / 1024**3
     )
 
-    table = Table(
-        title="vLLM Runtime Dashboard",
-    )
+    table = Table()
 
     table.add_column("Metric", overflow="ellipsis")
     table.add_column("Value", overflow="ellipsis")
@@ -336,10 +335,16 @@ def dashboard(metrics_text: str) -> Table:
     return table
 
 
-def dashboard_with_model(metrics_text: str, base: str) -> Table:
+def dashboard_with_model(metrics_text: str, base: str) -> Group:
+    # Render the title and model name as part of the live frame (not via
+    # console.print, which would append a new line to the terminal on every
+    # refresh).
     model = get_serving_model(base)
-    console.print(f"[center][green]{model}[/green][/]")
-    return dashboard(metrics_text)
+    return Group(
+        Text("vLLM Runtime Dashboard", justify="center"),
+        Text(model, style="green", justify="center"),
+        dashboard(metrics_text),
+    )
 
 
 VALID_MODES = {"--once", "--preview"}
