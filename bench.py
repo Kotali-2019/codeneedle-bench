@@ -19,6 +19,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from rich.console import Console
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
@@ -383,14 +385,143 @@ def _discover_corpora() -> list[str]:
     return sorted(p.stem for p in corpora_dir.glob("*.toml"))
 
 
+def _index_to_corpus(idx: int, corpora: list[str]) -> str | None:
+    """Map a 1-based checklist index to a corpus name, or None if out of range."""
+    if 1 <= idx <= len(corpora):
+        return corpora[idx - 1]
+    return None
+
+
+def _parse_selection(text: str, corpora: list[str]) -> list[str] | None:
+    """Parse a corpus selection into an ordered, de-duplicated list.
+
+    Empty input means "all" (returned as None so the caller can default).
+    Accepts 1-based indices, corpus names, ranges (e.g. "1-3"), and the
+    words "all"/"none". Raises SystemExit on unrecognized input so a bad
+    --select value fails loudly instead of silently running everything.
+    """
+    text = text.strip().lower()
+    if not text:
+        return None
+    if text == "all":
+        return list(corpora)
+    if text == "none":
+        return []
+
+    selected: list[str] = []
+    for token in text.replace(",", " ").split():
+        if "-" in token:  # range like "1-3"
+            lo, hi = token.split("-", 1)
+            try:
+                a, b = int(lo), int(hi)
+            except ValueError:
+                raise SystemExit(f"error: invalid selection '{token}'")
+            for idx in range(min(a, b), max(a, b) + 1):
+                name = _index_to_corpus(idx, corpora)
+                if name is None:
+                    raise SystemExit(f"error: selection index {idx} out of range")
+                if name not in selected:
+                    selected.append(name)
+        else:
+            try:
+                name = _index_to_corpus(int(token), corpora)
+            except ValueError:
+                name = token if token in corpora else None
+            if name is None:
+                raise SystemExit(f"error: unknown selection '{token}'")
+            if name not in selected:
+                selected.append(name)
+    return selected
+
+
+def _corpus_hint(name: str) -> str:
+    """One-line run-size hint for the checklist (effective default run size)."""
+    try:
+        if name == "tools":
+            from bench.toolcall import TOOL_DEFINITIONS
+            return f"{len(TOOL_DEFINITIONS)} tools"
+        from bench.config import load_corpus
+        from bench.extract import configure_primary_window, load_source_glob
+
+        corpus = load_corpus(name)
+        src = load_source_glob(corpus.directory, corpus.glob, corpus.limit)
+        configure_primary_window(src, corpus.primary_lines)
+        n_targets = len(src.targets)
+        if corpus.sample_functions:
+            n = len(corpus.sample_functions)
+        elif corpus.sample_k is not None:
+            n = min(corpus.sample_k, n_targets)
+        else:
+            n = n_targets
+        return f"{n} function(s)"
+    except Exception:
+        return ""
+
+
+def _select_corpora(corpora: list[str], args: argparse.Namespace) -> list[str]:
+    """Resolve which corpora to run for --corpus all.
+
+    --select bypasses the prompt (scriptable). Otherwise, in a terminal an
+    interactive checklist is shown; on non-interactive stdin, run all
+    (preserving the previous behavior).
+    """
+    if args.select:
+        selected = _parse_selection(args.select, corpora)
+        return list(corpora) if selected is None else selected
+
+    if not sys.stdin.isatty():
+        return list(corpora)
+
+    console = Console()
+    console.print("\n[bold cyan]--corpus all[bold cyan] — choose which corpora to run:\n")
+    for i, name in enumerate(corpora, 1):
+        hint = _corpus_hint(name)
+        line = f"  [bold]{i}[/]. {name}"
+        if hint:
+            line += f"  [dim]{hint}[dim]"
+        console.print(line)
+    console.print(
+        "\n[dim]Enter indices (e.g. '1 4 6'), a range ('1-3'), "
+        "'all', 'none', or Enter to run all.[dim]"
+    )
+
+    while True:
+        try:
+            raw = input("\nSelection> ")
+        except EOFError:
+            return list(corpora)
+        selected = _parse_selection(raw, corpora)
+        if selected is None:
+            selected = list(corpora)
+        if not selected:
+            console.print("[yellow]Nothing selected — nothing to run.[yellow]")
+            continue
+        console.print(f"\n[green]Will run:[/green] {', '.join(selected)}")
+        try:
+            confirm = input("Confirm? Enter to run, 'e' to edit: ")
+        except EOFError:
+            return selected
+        if confirm.strip().lower() in ("e", "edit", "n", "no"):
+            continue
+        return selected
+
+
 def cmd_run_all(args: argparse.Namespace) -> int:
     from bench.config import auto_dump_path, load_corpus, load_model
     from bench.extract import load_source_glob
     from bench.report import render_summary
     from bench.runner import run_benchmark
 
-    corpora = _discover_corpora()
-    print(f"Running all {len(corpora)} corpora: {', '.join(corpora)}\n", flush=True)
+    all_corpora = _discover_corpora()
+    selected = _select_corpora(all_corpora, args)
+    if not selected:
+        raise SystemExit("error: no corpora selected — nothing to run")
+    print(
+        f"Running {len(selected)} of {len(all_corpora)} corpora: "
+        f"{', '.join(selected)}\n",
+        flush=True,
+    )
+    corpora = selected
 
     if not args.model:
         raise SystemExit("error: --model is required")
@@ -684,6 +815,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--function", action="append",
         help="repeatable; overrides sampling. Use 'all' to run every extracted "
              "function in the corpus (shorthand for listing them all).",
+    )
+    p_run.add_argument(
+        "--select", default=None, metavar="LIST",
+        help="--corpus all only: run a subset instead of all corpora. "
+             "Comma/space-separated corpus numbers or names, a range, or "
+             "'all'/'none' (e.g. '1,4' or 'novel_16k tools'). In a terminal "
+             "an interactive checklist is shown instead.",
     )
     p_run.add_argument("--think", action="store_true", help="allow chain-of-thought (default: suppress)")
     p_run.add_argument(
