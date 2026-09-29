@@ -23,6 +23,22 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 
+# Characters that are illegal in a filename on every platform (NTFS disallows
+# ':' among them, which breaks C++ method names like "CpuMonitor::poll").
+_INVALID_FILENAME_CHARS = set('<>:"/\\|?*')
+
+
+def _dump_suffix(names: list[str]) -> str:
+    """Join function names into a filename-safe dump suffix, or "" if empty.
+
+    Used to tag explicit --function subsets so they don't clobber the
+    full-corpus dump. Names are sanitized so method/template characters
+    (e.g. C++ "::") can't produce an invalid filename.
+    """
+    joined = ",".join(names)
+    safe = "".join(c if c not in _INVALID_FILENAME_CHARS else "_" for c in joined)
+    return "__" + safe if safe else ""
+
 
 # --- source resolution ---------------------------------------------------
 
@@ -175,6 +191,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     source, corpus = _resolve_source(args)
 
+    # Validate an explicit --function subset against what this corpus can
+    # extract, so a typo fails fast with the available names (mirrors the
+    # tools corpus, which rejects unknown tool names).
+    if args.function and args.function != ["all"] and source is not None:
+        available = {t.name for t in source.targets}
+        missing = sorted(n for n in args.function if n not in available)
+        if missing:
+            raise SystemExit(
+                f"error: unknown --function name(s) in this corpus: "
+                f"{', '.join(missing)}; available: "
+                f"{', '.join(sorted(available))}"
+            )
+
     if (
         corpus is not None
         and corpus.sample_functions
@@ -218,24 +247,30 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     if args.dump:
         dump_path = Path(args.dump)
-    elif corpus is not None:
-        DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        dump_path = auto_dump_path(corpus, model, DEFAULT_RESULTS_DIR)
     else:
-        # --file mode: derive corpus stem from filename
-        from bench.config import CorpusConfig
-
-        synthetic_corpus = CorpusConfig(
-            name=Path(args.file).stem,
-            directory=Path(args.file).parent,
-            glob=Path(args.file).name,
-            limit=1,
-            sample_k=k,
-            sample_seed=seed,
-            primary_lines=20,
-        )
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        dump_path = auto_dump_path(synthetic_corpus, model, DEFAULT_RESULTS_DIR)
+        if corpus is not None:
+            dump_path = auto_dump_path(corpus, model, DEFAULT_RESULTS_DIR)
+        else:
+            # --file mode: derive corpus stem from filename
+            from bench.config import CorpusConfig
+
+            synthetic_corpus = CorpusConfig(
+                name=Path(args.file).stem,
+                directory=Path(args.file).parent,
+                glob=Path(args.file).name,
+                limit=1,
+                sample_k=k,
+                sample_seed=seed,
+                primary_lines=20,
+            )
+            dump_path = auto_dump_path(synthetic_corpus, model, DEFAULT_RESULTS_DIR)
+        # Tag explicit --function subsets in the filename so they don't clobber
+        # the full-corpus dump (mirrors the tools corpus behavior).
+        if args.function and args.function != ["all"]:
+            dump_path = dump_path.with_name(
+                f"{dump_path.stem}{_dump_suffix(args.function)}{dump_path.suffix}"
+            )
 
     # Scoring policy belongs to the corpus so every model is judged by the
     # same rules. CLI flags are explicit one-run overrides.
@@ -389,6 +424,18 @@ def cmd_run_all(args: argparse.Namespace) -> int:
 
         corpus = load_corpus(corpus_name)
         src = load_source_glob(corpus.directory, corpus.glob, corpus.limit)
+
+        # Validate an explicit --function subset against what this corpus can
+        # extract, so a typo fails fast with the available names.
+        if args.function and args.function != ["all"]:
+            available = {t.name for t in src.targets}
+            missing = sorted(n for n in args.function if n not in available)
+            if missing:
+                raise SystemExit(
+                    f"error: unknown --function name(s) in this corpus: "
+                    f"{', '.join(missing)}; available: "
+                    f"{', '.join(sorted(available))}"
+                )
 
         k = args.k if args.k is not None else corpus.sample_k
         seed = args.seed if args.seed is not None else corpus.sample_seed
