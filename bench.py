@@ -494,8 +494,10 @@ def _select_corpora(corpora: list[str], args: argparse.Namespace) -> list[str]:
         if selected is None:
             selected = list(corpora)
         if not selected:
-            console.print("[yellow]Nothing selected — nothing to run.[yellow]")
-            continue
+            console.print(
+                "\n[yellow]No corpora selected. Thank you — goodbye![yellow]"
+            )
+            return []
         console.print(f"\n[green]Will run:[/green] {', '.join(selected)}")
         try:
             confirm = input("Confirm? Enter to run, 'e' to edit: ")
@@ -512,16 +514,18 @@ def cmd_run_all(args: argparse.Namespace) -> int:
     from bench.report import render_summary
     from bench.runner import run_benchmark
 
-    all_corpora = _discover_corpora()
-    selected = _select_corpora(all_corpora, args)
+    corpora = _discover_corpora()
+    # `tools` is a special corpus appended at the end; include it in the
+    # checklist so it can be selected (or skipped) like the others.
+    candidates = corpora + ["tools"]
+    selected = _select_corpora(candidates, args)
     if not selected:
-        raise SystemExit("error: no corpora selected — nothing to run")
+        return 0  # 'none' — _select_corpora already said goodbye
     print(
-        f"Running {len(selected)} of {len(all_corpora)} corpora: "
+        f"Running {len(selected)} of {len(candidates)} corpora: "
         f"{', '.join(selected)}\n",
         flush=True,
     )
-    corpora = selected
 
     if not args.model:
         raise SystemExit("error: --model is required")
@@ -549,6 +553,8 @@ def cmd_run_all(args: argparse.Namespace) -> int:
     any_failure = False
 
     for corpus_name in corpora:
+        if corpus_name not in selected:
+            continue
         print(f"\n{'='*60}", flush=True)
         print(f"  CORPUS: {corpus_name}", flush=True)
         print(f"{'='*60}\n", flush=True)
@@ -609,27 +615,28 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         if passed < total:
             any_failure = True
 
-    # Run tool calling benchmark as part of --corpus all
-    print(f"\n{'='*60}", flush=True)
-    print(f"  CORPUS: tools", flush=True)
-    print(f"{'='*60}\n", flush=True)
+    # Run tool calling benchmark as part of --corpus all (only if selected)
+    if "tools" in selected:
+        print(f"\n{'='*60}", flush=True)
+        print(f"  CORPUS: tools", flush=True)
+        print(f"{'='*60}\n", flush=True)
 
-    from bench.toolcall import run_toolcall_benchmark
-    tool_dump = DEFAULT_RESULTS_DIR / f"{model.name}__all-tools.json"
-    tool_scores = run_toolcall_benchmark(
-        base_url=model.client.base_url,
-        model=model.client.model,
-        dump_path=tool_dump,
-        api_key=model.client.api_key,
-        temperature=model.client.temperature,
-        max_tokens=model.client.max_tokens,
-        timeout=model.client.timeout,
-    )
-    tool_passed = sum(1 for s in tool_scores if s.overall_pass)
-    tool_total = len(tool_scores)
-    corpus_results.append(("tools", tool_passed, tool_total, []))
-    if tool_passed < tool_total:
-        any_failure = True
+        from bench.toolcall import run_toolcall_benchmark
+        tool_dump = DEFAULT_RESULTS_DIR / f"{model.name}__all-tools.json"
+        tool_scores = run_toolcall_benchmark(
+            base_url=model.client.base_url,
+            model=model.client.model,
+            dump_path=tool_dump,
+            api_key=model.client.api_key,
+            temperature=model.client.temperature,
+            max_tokens=model.client.max_tokens,
+            timeout=model.client.timeout,
+        )
+        tool_passed = sum(1 for s in tool_scores if s.overall_pass)
+        tool_total = len(tool_scores)
+        corpus_results.append(("tools", tool_passed, tool_total, []))
+        if tool_passed < tool_total:
+            any_failure = True
 
     # Final combined report
     print(f"\n{'='*60}", flush=True)
@@ -915,7 +922,12 @@ def main(argv: list[str] | None = None) -> int:
     elif getattr(args, "color", False):
         set_color_override(True)
 
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        # Ctrl+C: exit quietly without a traceback.
+        print("\nAborted.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
