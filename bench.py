@@ -312,11 +312,18 @@ def cmd_run_tools(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         model.client.timeout = args.timeout
 
+    # --function filters to specific tools; 'all' means the full corpus.
+    fn_filter = args.function if args.function else None
+    if fn_filter == ["all"]:
+        fn_filter = None
+
     if args.dump:
         dump_path = Path(args.dump)
     else:
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        dump_path = DEFAULT_RESULTS_DIR / f"tools__{model.name}.json"
+        # Tag filtered runs so they don't clobber a full-corpus dump.
+        suffix = f"__{','.join(fn_filter)}" if fn_filter else ""
+        dump_path = DEFAULT_RESULTS_DIR / f"tools__{model.name}{suffix}.json"
 
     scores = run_toolcall_benchmark(
         base_url=model.client.base_url,
@@ -326,6 +333,7 @@ def cmd_run_tools(args: argparse.Namespace) -> int:
         temperature=model.client.temperature,
         max_tokens=model.client.max_tokens,
         timeout=model.client.timeout,
+        function_filter=fn_filter,
     )
     passed = sum(1 for s in scores if s.overall_pass)
     return 0 if passed == len(scores) else 1

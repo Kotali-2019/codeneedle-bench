@@ -522,14 +522,32 @@ def run_toolcall_benchmark(
     temperature: float = 0.0,
     max_tokens: int = 2000,
     timeout: float = 120.0,
+    function_filter: list[str] | None = None,
 ) -> list[ToolCallScore]:
+    # --function filter: run only the named tools, and send only those tool
+    # definitions to the model so a dedicated run is a true dedicated test.
+    if function_filter:
+        known = {t["function"]["name"] for t in TOOL_DEFINITIONS}
+        unknown = [n for n in function_filter if n not in known]
+        if unknown:
+            raise SystemExit(
+                f"error: unknown tool name(s): {', '.join(unknown)}; "
+                f"available: {', '.join(sorted(known))}"
+            )
+        wanted = set(function_filter)
+        tests = [t for t in TOOL_TESTS if t.expected_tool in wanted]
+        tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in wanted]
+    else:
+        tests = TOOL_TESTS
+        tools = TOOL_DEFINITIONS
+
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     scores: list[ToolCallScore] = []
 
-    total = len(TOOL_TESTS)
-    print(f"Tool calling benchmark: {total} tests across {len(TOOL_DEFINITIONS)} tools\n", flush=True)
+    total = len(tests)
+    print(f"Tool calling benchmark: {total} tests across {len(tools)} tools\n", flush=True)
 
-    for i, test in enumerate(TOOL_TESTS, 1):
+    for i, test in enumerate(tests, 1):
         messages.append({"role": "user", "content": test.prompt})
         print(f"[{i}/{total}] {test.expected_tool:<25} {test.prompt[:60]}...", end="", flush=True)
 
@@ -539,7 +557,7 @@ def run_toolcall_benchmark(
                 base_url=base_url,
                 model=model,
                 messages=messages,
-                tools=TOOL_DEFINITIONS,
+                tools=tools,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
