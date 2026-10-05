@@ -187,6 +187,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         return cmd_run_all(args)
     if getattr(args, "corpus", None) == "tools":
         return cmd_run_tools(args)
+    if getattr(args, "corpus", None) == "gsm8k":
+        return cmd_run_gsm8k(args)
 
     from bench.config import auto_dump_path, load_model
     from bench.runner import run_benchmark
@@ -376,6 +378,57 @@ def cmd_run_tools(args: argparse.Namespace) -> int:
     return 0 if passed == len(scores) else 1
 
 
+def cmd_run_gsm8k(args: argparse.Namespace) -> int:
+    from bench.config import load_model
+    from bench.gsm8k import run_gsm8k_benchmark
+
+    if not args.model:
+        raise SystemExit("error: --model is required")
+    model, model_from_file = load_model(args.model)
+    if not model_from_file:
+        print(
+            f"  (no model config '{args.model}' found; using as raw model identifier with defaults)",
+            file=sys.stderr,
+        )
+
+    if args.base_url:
+        model.client.base_url = args.base_url
+    if args.api_key:
+        model.client.api_key = args.api_key
+    if args.temperature is not None:
+        model.client.temperature = args.temperature
+    if args.max_tokens is not None:
+        model.client.max_tokens = args.max_tokens
+    if args.timeout is not None:
+        model.client.timeout = args.timeout
+
+    # --function filters to specific problems; 'all' means the full corpus.
+    fn_filter = args.function if args.function else None
+    if fn_filter == ["all"]:
+        fn_filter = None
+
+    if args.dump:
+        dump_path = Path(args.dump)
+    else:
+        DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        # Tag filtered runs so they don't clobber a full-corpus dump.
+        suffix = f"__{','.join(fn_filter)}" if fn_filter else ""
+        dump_path = DEFAULT_RESULTS_DIR / f"gsm8k__{model.name}{suffix}.json"
+
+    scores = run_gsm8k_benchmark(
+        base_url=model.client.base_url,
+        model=model.client.model,
+        dump_path=dump_path,
+        api_key=model.client.api_key,
+        temperature=model.client.temperature,
+        max_tokens=model.client.max_tokens,
+        timeout=model.client.timeout,
+        function_filter=fn_filter,
+    )
+    passed = sum(1 for s in scores if s.correct)
+    return 0 if passed == len(scores) else 1
+
+
 # --- run all --------------------------------------------------------------
 
 
@@ -440,6 +493,9 @@ def _corpus_hint(name: str) -> str:
         if name == "tools":
             from bench.toolcall import TOOL_DEFINITIONS
             return f"{len(TOOL_DEFINITIONS)} tools"
+        if name == "gsm8k":
+            from bench.gsm8k import GSM8K_TESTS
+            return f"{len(GSM8K_TESTS)} problems"
         from bench.config import load_corpus
         from bench.extract import configure_primary_window, load_source_glob
 
@@ -515,9 +571,9 @@ def cmd_run_all(args: argparse.Namespace) -> int:
     from bench.runner import run_benchmark
 
     corpora = _discover_corpora()
-    # `tools` is a special corpus appended at the end; include it in the
-    # checklist so it can be selected (or skipped) like the others.
-    candidates = corpora + ["tools"]
+    # `tools` and `gsm8k` are special corpora appended at the end; include
+    # them in the checklist so they can be selected (or skipped) like the others.
+    candidates = corpora + ["tools", "gsm8k"]
     selected = _select_corpora(candidates, args)
     if not selected:
         return 0  # 'none' — _select_corpora already said goodbye
@@ -638,6 +694,29 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         if tool_passed < tool_total:
             any_failure = True
 
+    # Run the GSM8K math benchmark as part of --corpus all (only if selected)
+    if "gsm8k" in selected:
+        print(f"\n{'='*60}", flush=True)
+        print(f"  CORPUS: gsm8k", flush=True)
+        print(f"{'='*60}\n", flush=True)
+
+        from bench.gsm8k import run_gsm8k_benchmark
+        gsm8k_dump = DEFAULT_RESULTS_DIR / f"{model.name}__all-gsm8k.json"
+        gsm8k_scores = run_gsm8k_benchmark(
+            base_url=model.client.base_url,
+            model=model.client.model,
+            dump_path=gsm8k_dump,
+            api_key=model.client.api_key,
+            temperature=model.client.temperature,
+            max_tokens=model.client.max_tokens,
+            timeout=model.client.timeout,
+        )
+        gsm8k_passed = sum(1 for s in gsm8k_scores if s.correct)
+        gsm8k_total = len(gsm8k_scores)
+        corpus_results.append(("gsm8k", gsm8k_passed, gsm8k_total, []))
+        if gsm8k_passed < gsm8k_total:
+            any_failure = True
+
     # Final combined report
     print(f"\n{'='*60}", flush=True)
     print(f"  COMBINED RESULTS — {model.name}", flush=True)
@@ -645,7 +724,7 @@ def cmd_run_all(args: argparse.Namespace) -> int:
 
     for corpus_name, passed, total, scores in corpus_results:
         status = "✓" if passed == total else "✗"
-        if corpus_name == "tools":
+        if corpus_name in ("tools", "gsm8k"):
             print(f"  {status} {corpus_name:<20} {passed}/{total} passed", flush=True)
         else:
             matched = sum(s.primary_matched for s in scores if not s.error)
