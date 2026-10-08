@@ -24,3 +24,6 @@ venv/
 # Benchmark outputs — each user generates their own
 results/*.json
 analysis/charts/
+
+# Downloaded benchmark datasets (e.g. HumanEval) — cached locally
+.cache/

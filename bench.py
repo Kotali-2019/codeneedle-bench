@@ -189,6 +189,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return cmd_run_tools(args)
     if getattr(args, "corpus", None) == "gsm8k":
         return cmd_run_gsm8k(args)
+    if getattr(args, "corpus", None) == "humaneval":
+        return cmd_run_humaneval(args)
+    if getattr(args, "corpus", None) == "fixeval":
+        return cmd_run_fixeval(args)
 
     from bench.config import auto_dump_path, load_model
     from bench.runner import run_benchmark
@@ -317,6 +321,11 @@ def cmd_run(args: argparse.Namespace) -> int:
             else (corpus.min_code_lines if corpus is not None else 0)
         ),
         model_label=model.label,
+        pass_ratio=(
+            args.pass_ratio if args.pass_ratio is not None
+            else (corpus.pass_ratio if corpus is not None else 0.4)
+        ),
+        ablate=args.ablate,
     )
     # Exit 0 means "the benchmark ran"; per-function FAILs are a normal result,
     # not a tool error. Only a run that couldn't produce results exits non-zero.
@@ -429,6 +438,136 @@ def cmd_run_gsm8k(args: argparse.Namespace) -> int:
     return 0 if passed == len(scores) else 1
 
 
+def cmd_run_humaneval(args: argparse.Namespace) -> int:
+    from bench.config import load_model
+    from bench.humaneval import run_humaneval_benchmark
+
+    if not args.model:
+        raise SystemExit("error: --model is required")
+    model, model_from_file = load_model(args.model)
+    if not model_from_file:
+        print(
+            f"  (no model config '{args.model}' found; using as raw model identifier with defaults)",
+            file=sys.stderr,
+        )
+
+    if args.base_url:
+        model.client.base_url = args.base_url
+    if args.api_key:
+        model.client.api_key = args.api_key
+    if args.temperature is not None:
+        model.client.temperature = args.temperature
+    if args.max_tokens is not None:
+        model.client.max_tokens = args.max_tokens
+    if args.timeout is not None:
+        model.client.timeout = args.timeout
+
+    if args.relax_indent:
+        print(
+            "note: --relax-indent is a no-op for humaneval "
+            "(pass/fail comes from executing the tests, "
+            "not line matching)",
+            file=sys.stderr,
+        )
+
+    # --function filters to specific task ids; 'all' means the full corpus.
+    fn_filter = args.function if args.function else None
+    if fn_filter == ["all"]:
+        fn_filter = None
+
+    if args.dump:
+        dump_path = Path(args.dump)
+    else:
+        DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        # Tag filtered runs so they don't clobber a full-corpus dump.
+        # Task ids contain '/' (e.g. "HumanEval/10") — illegal in
+        # filenames — so flatten anything not alphanumeric.
+        flat = ",".join(fn_filter) if fn_filter else ""
+        suffix = f"__{flat}" if flat else ""
+        suffix = "".join(c if c.isalnum() or c == "_" else "-"
+                         for c in suffix)
+        dump_path = DEFAULT_RESULTS_DIR / f"humaneval__{model.name}{suffix}.json"
+
+    scores = run_humaneval_benchmark(
+        base_url=model.client.base_url,
+        model=model.client.model,
+        dump_path=dump_path,
+        api_key=model.client.api_key,
+        temperature=model.client.temperature,
+        max_tokens=model.client.max_tokens,
+        timeout=model.client.timeout,
+        function_filter=fn_filter,
+        exec_timeout=args.exec_timeout,
+        samples=args.samples,
+    )
+    passed = sum(1 for s in scores if s.passed)
+    return 0 if passed == len(scores) else 1
+
+
+def cmd_run_fixeval(args: argparse.Namespace) -> int:
+    from bench.config import load_model
+    from bench.humaneval import run_fixeval_benchmark
+
+    if not args.model:
+        raise SystemExit("error: --model is required")
+    model, model_from_file = load_model(args.model)
+    if not model_from_file:
+        print(
+            f"  (no model config '{args.model}' found; using as raw model identifier with defaults)",
+            file=sys.stderr,
+        )
+
+    if args.base_url:
+        model.client.base_url = args.base_url
+    if args.api_key:
+        model.client.api_key = args.api_key
+    if args.temperature is not None:
+        model.client.temperature = args.temperature
+    if args.max_tokens is not None:
+        model.client.max_tokens = args.max_tokens
+    if args.timeout is not None:
+        model.client.timeout = args.timeout
+
+    if args.relax_indent:
+        print(
+            "note: --relax-indent is a no-op for fixeval "
+            "(pass/fail comes from executing the tests, "
+            "not line matching)",
+            file=sys.stderr,
+        )
+
+    # --function filters to specific problem ids; 'all' means the full corpus.
+    fn_filter = args.function if args.function else None
+    if fn_filter == ["all"]:
+        fn_filter = None
+
+    if args.dump:
+        dump_path = Path(args.dump)
+    else:
+        DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        # Tag filtered runs so they don't clobber a full-corpus dump.
+        flat = ",".join(fn_filter) if fn_filter else ""
+        suffix = f"__{flat}" if flat else ""
+        suffix = "".join(c if c.isalnum() or c == "_" else "-"
+                         for c in suffix)
+        dump_path = DEFAULT_RESULTS_DIR / f"fixeval__{model.name}{suffix}.json"
+
+    scores = run_fixeval_benchmark(
+        base_url=model.client.base_url,
+        model=model.client.model,
+        dump_path=dump_path,
+        api_key=model.client.api_key,
+        temperature=model.client.temperature,
+        max_tokens=model.client.max_tokens,
+        timeout=model.client.timeout,
+        function_filter=fn_filter,
+        exec_timeout=args.exec_timeout,
+        samples=args.samples,
+    )
+    passed = sum(1 for s in scores if s.passed)
+    return 0 if passed == len(scores) else 1
+
+
 # --- run all --------------------------------------------------------------
 
 
@@ -496,6 +635,13 @@ def _corpus_hint(name: str) -> str:
         if name == "gsm8k":
             from bench.gsm8k import GSM8K_TESTS
             return f"{len(GSM8K_TESTS)} problems"
+        if name == "humaneval":
+            # Static hint — must NOT trigger the dataset download.
+            from bench.humaneval import HUMANEVAL_TOTAL
+            return f"{HUMANEVAL_TOTAL} problems (downloaded on first run)"
+        if name == "fixeval":
+            from bench.humaneval import FIXEVAL_PROBLEMS
+            return f"{len(FIXEVAL_PROBLEMS)} problems"
         from bench.config import load_corpus
         from bench.extract import configure_primary_window, load_source_glob
 
@@ -512,6 +658,33 @@ def _corpus_hint(name: str) -> str:
         return f"{n} function(s)"
     except Exception:
         return ""
+
+
+def _check_endpoint_model(base_url: str, model: str) -> str | None:
+    """Cheap pre-flight: is the endpoint up, and does it
+    serve this model id?
+
+    A dead endpoint or a strict server (vLLM rejects
+    unlisted model ids with HTTP 400) must fail here —
+    before the user spends a selection on the --corpus all
+    checklist — not at the first query of the first
+    corpus. Returns None when the check passes or the
+    server cannot verify (no /v1/models listing).
+    """
+    from bench.client import list_served_models
+
+    try:
+        served = list_served_models(base_url)
+    except Exception as e:
+        return (f"endpoint {base_url} is not reachable: {e} "
+                f"— check the URL and that the server is up")
+    if served is None:
+        return None
+    ids = [m.get("id") for m in served if m.get("id")]
+    if not ids or model in ids:
+        return None
+    return (f"model '{model}' is not served by {base_url}; "
+            f"served ids: {', '.join(ids)}")
 
 
 def _select_corpora(corpora: list[str], args: argparse.Namespace) -> list[str]:
@@ -571,17 +744,10 @@ def cmd_run_all(args: argparse.Namespace) -> int:
     from bench.runner import run_benchmark
 
     corpora = _discover_corpora()
-    # `tools` and `gsm8k` are special corpora appended at the end; include
-    # them in the checklist so they can be selected (or skipped) like the others.
-    candidates = corpora + ["tools", "gsm8k"]
-    selected = _select_corpora(candidates, args)
-    if not selected:
-        return 0  # 'none' — _select_corpora already said goodbye
-    print(
-        f"Running {len(selected)} of {len(candidates)} corpora: "
-        f"{', '.join(selected)}\n",
-        flush=True,
-    )
+    # `tools`, `gsm8k`, `humaneval` and `fixeval` are special corpora
+    # appended at the end; include them in the checklist so they can
+    # be selected (or skipped) like the others.
+    candidates = corpora + ["tools", "gsm8k", "humaneval", "fixeval"]
 
     if not args.model:
         raise SystemExit("error: --model is required")
@@ -603,6 +769,28 @@ def cmd_run_all(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         model.client.timeout = args.timeout
     suppress_thinking = model.suppress_thinking and not args.think
+
+    # Verify the endpoint and the model id it serves BEFORE
+    # the corpus checklist: a dead endpoint or a strict
+    # server (vLLM rejects unlisted ids with HTTP 400)
+    # must fail here, not at the first query of the
+    # first corpus the user selected.
+    if not args.skip_preflight:
+        err = _check_endpoint_model(model.client.base_url, model.client.model)
+        if err:
+            print(f"\npre-flight failed: {err}\n", file=sys.stderr)
+            print("Pass --skip-preflight to push past this check.",
+                  file=sys.stderr)
+            raise SystemExit(2)
+
+    selected = _select_corpora(candidates, args)
+    if not selected:
+        return 0  # 'none' — _select_corpora already said goodbye
+    print(
+        f"Running {len(selected)} of {len(candidates)} corpora: "
+        f"{', '.join(selected)}\n",
+        flush=True,
+    )
 
     all_scores = []
     corpus_results = []
@@ -640,6 +828,14 @@ def cmd_run_all(args: argparse.Namespace) -> int:
             relax_indent = True
         if args.strict_indent:
             relax_indent = False
+        count_comments = corpus.count_comments
+        if args.no_comments:
+            count_comments = False
+        if args.count_comments:
+            count_comments = True
+        pass_ratio = (
+            args.pass_ratio if args.pass_ratio is not None else corpus.pass_ratio
+        )
 
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         lang_tag = src.language
@@ -663,6 +859,8 @@ def cmd_run_all(args: argparse.Namespace) -> int:
             skip_preflight=args.skip_preflight,
             fail_fast_after=None if args.no_fail_fast else args.fail_fast_after,
             relax_indent=relax_indent,
+            count_comments=count_comments,
+            pass_ratio=pass_ratio,
         )
         passed = sum(1 for s in scores if s.passed)
         total = len(scores)
@@ -717,6 +915,58 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         if gsm8k_passed < gsm8k_total:
             any_failure = True
 
+    # Run the HumanEval code-generation benchmark as part of --corpus all
+    # (only if selected). Downloads the dataset on first run.
+    if "humaneval" in selected:
+        print(f"\n{'='*60}", flush=True)
+        print(f"  CORPUS: humaneval", flush=True)
+        print(f"{'='*60}\n", flush=True)
+
+        from bench.humaneval import run_humaneval_benchmark
+        he_dump = DEFAULT_RESULTS_DIR / f"{model.name}__all-humaneval.json"
+        he_scores = run_humaneval_benchmark(
+            base_url=model.client.base_url,
+            model=model.client.model,
+            dump_path=he_dump,
+            api_key=model.client.api_key,
+            temperature=model.client.temperature,
+            max_tokens=model.client.max_tokens,
+            timeout=model.client.timeout,
+            exec_timeout=args.exec_timeout,
+            samples=args.samples,
+        )
+        he_passed = sum(1 for s in he_scores if s.passed)
+        he_total = len(he_scores)
+        corpus_results.append(("humaneval", he_passed, he_total, []))
+        if he_passed < he_total:
+            any_failure = True
+
+    # Run the fixeval bug-fix benchmark as part of --corpus all
+    # (only if selected).
+    if "fixeval" in selected:
+        print(f"\n{'='*60}", flush=True)
+        print(f"  CORPUS: fixeval", flush=True)
+        print(f"{'='*60}\n", flush=True)
+
+        from bench.humaneval import run_fixeval_benchmark
+        fe_dump = DEFAULT_RESULTS_DIR / f"{model.name}__all-fixeval.json"
+        fe_scores = run_fixeval_benchmark(
+            base_url=model.client.base_url,
+            model=model.client.model,
+            dump_path=fe_dump,
+            api_key=model.client.api_key,
+            temperature=model.client.temperature,
+            max_tokens=model.client.max_tokens,
+            timeout=model.client.timeout,
+            exec_timeout=args.exec_timeout,
+            samples=args.samples,
+        )
+        fe_passed = sum(1 for s in fe_scores if s.passed)
+        fe_total = len(fe_scores)
+        corpus_results.append(("fixeval", fe_passed, fe_total, []))
+        if fe_passed < fe_total:
+            any_failure = True
+
     # Final combined report
     print(f"\n{'='*60}", flush=True)
     print(f"  COMBINED RESULTS — {model.name}", flush=True)
@@ -724,7 +974,7 @@ def cmd_run_all(args: argparse.Namespace) -> int:
 
     for corpus_name, passed, total, scores in corpus_results:
         status = "✓" if passed == total else "✗"
-        if corpus_name in ("tools", "gsm8k"):
+        if corpus_name in ("tools", "gsm8k", "humaneval", "fixeval"):
             print(f"  {status} {corpus_name:<20} {passed}/{total} passed", flush=True)
         else:
             matched = sum(s.primary_matched for s in scores if not s.error)
@@ -802,6 +1052,7 @@ def cmd_rescore(args: argparse.Namespace) -> int:
         count_comments = False
     if args.count_comments:
         count_comments = True
+    pass_ratio = float(scoring.get("pass_ratio", 0.4))
 
     if not dump.get("complete", True):
         print(
@@ -822,7 +1073,7 @@ def cmd_rescore(args: argparse.Namespace) -> int:
             t.name, t.primary_lines, t.bonus_lines,
             r.get("response", ""), relax_indent=relax_indent,
             primary_kinds=t.primary_kinds, bonus_kinds=t.bonus_kinds,
-            count_comments=count_comments,
+            count_comments=count_comments, pass_ratio=pass_ratio,
         )
         if r.get("error"):
             sc.error = r["error"]
@@ -912,8 +1163,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--think", action="store_true", help="allow chain-of-thought (default: suppress)")
     p_run.add_argument(
         "--skip-preflight", action="store_true",
-        help="skip the context-fit pre-flight probe (not recommended for local "
-             "servers; saves one full-prompt ingest on paid hosted APIs)",
+        help="skip the pre-flight checks: endpoint reachability, "
+             "model acceptance, and the context-fit probe (not "
+             "recommended; saves probes but a bad endpoint or "
+             "model id then fails at the first query)",
     )
     p_run.add_argument(
         "--fail-fast-after", type=int, default=2, metavar="N",
@@ -951,7 +1204,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--notes", default=None, metavar="TEXT",
         help="free-text runtime provenance recorded in the dump, e.g. "
-             "\"LM Studio 0.3.x, Q8 KV cache, 131072 ctx\"",
+        "\"LM Studio 0.3.x, Q8 KV cache, 131072 ctx\"",
+    )
+    p_run.add_argument(
+        "--pass-ratio", type=float, default=None, metavar="R",
+        help="fraction of expected lines a function must reproduce to pass "
+        "(overrides the corpus config, e.g. 0.7 for a stricter cohort)",
+    )
+    p_run.add_argument(
+        "--ablate", action="store_true",
+        help="diagnostic: omit the corpus from the prompt so scores reflect "
+        "parametric memory, not in-context retrieval",
+    )
+    p_run.add_argument(
+        "--exec-timeout", type=float, default=10.0, metavar="SECONDS",
+        help="humaneval/fixeval only: per-problem timeout for executing "
+        "model-generated code (default: 10)",
+    )
+    p_run.add_argument(
+        "--samples", type=int, default=1, metavar="N",
+        help="humaneval/fixeval only: run each problem N times and "
+        "report the pass@1 per-sample mean, which surfaces "
+        "run-to-run variance (default: 1)",
     )
     p_run.set_defaults(func=cmd_run)
 

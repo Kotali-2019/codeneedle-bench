@@ -85,6 +85,7 @@ def score(
     primary_kinds: list[str] | None = None,
     bonus_kinds: list[str] | None = None,
     count_comments: bool = True,
+    pass_ratio: float = PASS_RATIO,
 ) -> FunctionScore:
     """Score a single function's predicted output against expected lines.
 
@@ -234,7 +235,7 @@ def score(
         primary_total=primary_total,
         hallucinated=hallucinated,
         bonus_matched=bonus_matched,
-        passed=primary_total > 0 and (primary_matched / primary_total) >= PASS_RATIO,
+        passed=primary_total > 0 and (primary_matched / primary_total) >= pass_ratio,
         expected_tagged=expected_tagged,
         predicted_tagged=predicted_tagged,
         code_matched=code_matched,

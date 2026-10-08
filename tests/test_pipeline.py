@@ -10,8 +10,45 @@ import pytest
 
 from bench.client import ClientConfig
 from bench.generation import current_generation
-from bench.runner import DUMP_SCHEMA_VERSION, run_benchmark
+from bench.runner import (
+    DUMP_SCHEMA_VERSION,
+    _preflight_context_check,
+    run_benchmark,
+)
 from bench.textio import read_text, write_text
+
+
+def test_preflight_reserves_real_output_budget(monkeypatch):
+    """Regression: the context probe used max_tokens=16, so it
+    approved prompts in the band (limit - max_tokens,
+    limit - 16] that every real query then rejected with
+    HTTP 400 — this aborted a novel_128k run after two
+    queries on a 247680-context model. The probe must
+    reserve the real output budget; a stop sequence keeps
+    generation cheap."""
+    seen = {}
+
+    def fake_chat(cfg, system, user):
+        seen["max_tokens"] = cfg.max_tokens
+        seen["stop"] = cfg.stop
+        return "    return 1"
+
+    monkeypatch.setattr("bench.runner.chat_complete", fake_chat)
+
+    cfg = ClientConfig(
+        base_url="http://x", model="m", max_tokens=6000,
+    )
+    assert _preflight_context_check("def f():\n", cfg) is None
+    assert seen["max_tokens"] == 6000
+    assert "\n" in (seen["stop"] or [])
+
+    # An existing stop list is preserved, not clobbered.
+    cfg2 = ClientConfig(
+        base_url="http://x", model="m", max_tokens=2000,
+        stop=["END"],
+    )
+    assert _preflight_context_check("def g():\n", cfg2) is None
+    assert seen["stop"] == ["END", "\n"]
 
 
 class _Handler(BaseHTTPRequestHandler):

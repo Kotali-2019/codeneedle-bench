@@ -13,7 +13,7 @@ from .extract import (
 )
 from .report import render_function, render_summary
 from .textio import read_text, write_text, write_text_atomic
-from .scorer import FunctionScore, score
+from .scorer import FunctionScore, PASS_RATIO, score
 from .generation import GENERATION_FIELD, current_generation
 from .scoring_policy import ScoringPolicy
 
@@ -124,12 +124,20 @@ def _signature_block(target) -> str:
     return "\n".join("    " + l for l in sig.splitlines())
 
 
-def _build_prompt(target, text: str, multi_file: bool, suppress_thinking: bool) -> str:
+def _build_prompt(target, text: str, multi_file: bool, suppress_thinking: bool,
+                  ablate: bool = False) -> str:
     file_qualifier = (
         f" in file `{target.source_path}`" if multi_file and target.source_path else ""
     )
+    # Ablation mode: drop the corpus from the prompt (the signature
+    # anchor stays). Whatever the model still reproduces comes from
+    # parametric memory, not in-context retrieval — comparing an
+    # ablated run against a normal run separates the two.
+    file_contents = (
+        "[corpus omitted — reproduce the function from memory]" if ablate else text
+    )
     return PROMPT_TEMPLATE.format(
-        file_contents=text,
+        file_contents=file_contents,
         name=target.name,
         file_qualifier=file_qualifier,
         n=len(target.primary_lines),
@@ -139,25 +147,32 @@ def _build_prompt(target, text: str, multi_file: bool, suppress_thinking: bool) 
 
 
 def _preflight_context_check(prompt: str, cfg: ClientConfig) -> str | None:
-    """Send the actual prompt with a tiny max_tokens to detect context-too-small.
+    """Send the actual prompt to detect context-too-small.
 
-    Returns None on success, an error message string otherwise. Cheap because
-    no real generation happens — the model only ingests the prompt and emits
-    a single token. As a side benefit it warms the server's prefix KV cache
-    for the rest of the run.
+    Returns None on success, an error message string otherwise.
+    Cheap because a stop sequence ends generation after a
+    token or two — the model only ingests the prompt. As a
+    side benefit it warms the server's prefix KV cache for
+    the rest of the run.
+
+    The probe must reserve the REAL output budget, not a
+    token one: servers validate prompt_tokens + max_tokens
+    <= context_limit at request time, so a max_tokens=16
+    probe approves prompts in the band
+    (limit - max_tokens, limit - 16] that every real query
+    then rejects with HTTP 400 — the failure that aborted a
+    novel_128k run after two queries on a 247680-context
+    model.
 
     Inherits the full request shape from `cfg` (so flags like
-    `use_max_completion_tokens`, `reasoning_effort`, `prefill_no_think`,
-    and `stop` apply) — otherwise the probe and the real queries would hit
-    different server-side validation paths.
-
-    `max_tokens=16` (not 1): some hosted APIs reject very small budgets
-    with "Could not finish the message" before even processing the prompt.
-    16 is still negligible cost-wise and finishes in a fraction of a second.
+    `use_max_completion_tokens`, `reasoning_effort`,
+    `prefill_no_think`, and `stop` apply) — otherwise the
+    probe and the real queries would hit different
+    server-side validation paths.
     """
     from dataclasses import replace
 
-    probe_cfg = replace(cfg, max_tokens=16)
+    probe_cfg = replace(cfg, stop=[*(cfg.stop or []), "\n"])
     try:
         chat_complete(probe_cfg, system=None, user=prompt)
         return None
@@ -186,6 +201,8 @@ def run_benchmark(
     notes: str | None = None,
     min_code_lines: int = 0,
     model_label: str | None = None,
+    pass_ratio: float = PASS_RATIO,
+    ablate: bool = False,
 ) -> list[FunctionScore]:
     text = source.text
     total_lines = text.count("\n") + 1
@@ -282,10 +299,12 @@ def run_benchmark(
     # are the easiest mistake to make with LM Studio (TTL-driven JIT reload at
     # default 4K context). Better to abort up front.
     if not skip_preflight:
-        probe_prompt = _build_prompt(chosen[0], text, multi_file, suppress_thinking)
+        probe_prompt = _build_prompt(
+            chosen[0], text, multi_file, suppress_thinking, ablate
+        )
         print(
             f"\nPre-flight: probing context fit with a {len(probe_prompt):,}-char prompt "
-            f"(max_tokens=16)...",
+            f"(budget {cfg.max_tokens} tokens, generation stopped early)...",
             flush=True,
         )
         err = _preflight_context_check(probe_prompt, cfg)
@@ -365,9 +384,11 @@ def run_benchmark(
         "function_filter": function_filter,
         "primary_lines": primary_window_lines,
         "min_code_lines": min_code_lines,
+        "ablate": ablate,
         "scoring": ScoringPolicy(
             relax_indent=relax_indent,
             count_comments=count_comments,
+            pass_ratio=pass_ratio,
         ).as_dict(),
         # Server-side settings the API can't report (KV-cache quantization,
         # loaded context length, runtime/quant build). Record them via
@@ -403,7 +424,7 @@ def run_benchmark(
         write_text_atomic(dump_path, json.dumps(payload, indent=2))
 
     for i, t in enumerate(chosen, 1):
-        prompt = _build_prompt(t, text, multi_file, suppress_thinking)
+        prompt = _build_prompt(t, text, multi_file, suppress_thinking, ablate)
         print(
             f"\n[{i}/{len(chosen)}] `{t.name}` — prompt {len(prompt):,} chars, waiting on model...",
             flush=True,
@@ -441,6 +462,7 @@ def run_benchmark(
             primary_kinds=t.primary_kinds,
             bonus_kinds=t.bonus_kinds,
             count_comments=count_comments,
+            pass_ratio=pass_ratio,
         )
         if score_error:
             sc.error = score_error
@@ -508,7 +530,10 @@ def run_benchmark(
               flush=True)
     if not count_comments:
         print("(scored with --no-comments — only code lines earn credit)", flush=True)
-    print(render_summary(scores), flush=True)
+    if ablate:
+        print("(ablation run — corpus omitted from the prompt; scores reflect "
+              "parametric memory, not in-context retrieval)", flush=True)
+    print(render_summary(scores, latencies=[r.latency_s for r in runs]), flush=True)
 
     if dump_path:
         _write_dump(in_progress=False)

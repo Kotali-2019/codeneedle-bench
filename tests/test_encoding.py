@@ -135,7 +135,8 @@ def test_extract_survives_redirected_cp1252_stdout(python_bin, repo_root, tmp_pa
     with out.open("wb") as fh:
         r = subprocess.run(
             [python_bin, str(repo_root / "bench.py"), "extract",
-             "--corpus", "http_server"],
+             "--corpus", "http_server",
+             "--min-code-lines", "0"],
             stdout=fh, stderr=subprocess.PIPE, cwd=repo_root,
             env=_cp1252_env(), timeout=180,
         )

@@ -10,3 +10,9 @@ glob = "*.cpp"
 [sample]
 k = 16
 seed = 42
+min_code_lines = 5
+
+[scoring]
+count_comments = true
+relax_indent = false
+pass_ratio = 0.7

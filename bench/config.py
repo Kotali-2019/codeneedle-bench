@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .client import ClientConfig
+from .scorer import PASS_RATIO
 from .textio import read_text
 
 
@@ -72,6 +73,11 @@ class CorpusConfig:
     # them. Blank lines never earn credit and aren't configurable.
     count_comments: bool = True
     relax_indent: bool = False
+    # Fraction of credit-eligible primary lines a function must
+    # reproduce to pass. 0.4 is the original 8-of-20; raise it
+    # (e.g. 0.7) for a stricter cohort. Recorded in every dump so
+    # runs under different thresholds stay distinguishable.
+    pass_ratio: float = PASS_RATIO
     # Drop targets whose primary window has fewer than this many code lines.
     # Default 0 keeps every target (and keeps existing results reproducible);
     # raise it to exclude docstring-dominated windows.
@@ -140,6 +146,9 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
     primary_lines = int(sample_raw.get("primary_lines", 20))
     if primary_lines < 20:
         raise ValueError(f"{path}: [sample].primary_lines must be at least 20")
+    pass_ratio = float(scoring_raw.get("pass_ratio", PASS_RATIO))
+    if not 0 < pass_ratio <= 1:
+        raise ValueError(f"{path}: [scoring].pass_ratio must be in (0, 1]")
     return CorpusConfig(
         name=path.stem,
         directory=directory,
@@ -151,6 +160,7 @@ def load_corpus(name_or_path: str | Path) -> CorpusConfig:
         sample_functions=sample_functions,
         count_comments=bool(scoring_raw.get("count_comments", True)),
         relax_indent=bool(scoring_raw.get("relax_indent", False)),
+        pass_ratio=pass_ratio,
         min_code_lines=int(sample_raw.get("min_code_lines", 0)),
     )
 

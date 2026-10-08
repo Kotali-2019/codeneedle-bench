@@ -23,6 +23,24 @@ class ClientConfig:
     use_max_completion_tokens: bool = False  # send `max_completion_tokens` instead of `max_tokens` (required by OpenAI GPT-5 family)
 
 
+def list_served_models(base_url: str, timeout: float = 10.0) -> list[dict] | None:
+    """GET /v1/models and return the served model entries.
+
+    Returns None when the server does not implement the
+    listing (404 or a non-JSON body) — callers must treat
+    that as "cannot verify", not "no models". Transport
+    errors (endpoint down, timeout) propagate to the
+    caller so it can report an unreachable endpoint.
+    """
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.get(base_url.rstrip("/") + "/v1/models")
+            r.raise_for_status()
+            return r.json().get("data", [])
+    except (httpx.HTTPStatusError, ValueError):
+        return None
+
+
 def chat_complete(cfg: ClientConfig, system: str | None, user: str) -> str:
     messages: list[dict] = []
     if system:

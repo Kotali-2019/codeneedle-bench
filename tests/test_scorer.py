@@ -108,6 +108,23 @@ def test_ratio_property_and_zero_denominator():
     assert not sc.passed, "an all-blank window cannot pass"
 
 
+def test_custom_pass_ratio_tightens_threshold():
+    """A stricter corpus can demand near-complete reproduction.
+
+    13/20 passes under the legacy 0.4 default but fails at 0.7;
+    14/20 clears the stricter bar.
+    """
+    sc = score("t", CODE20, [], "\n".join(CODE20[:14]),
+               primary_kinds=K20, pass_ratio=0.7)
+    assert sc.primary_matched == 14 and sc.passed
+    sc = score("t", CODE20, [], "\n".join(CODE20[:13]),
+               primary_kinds=K20, pass_ratio=0.7)
+    assert sc.primary_matched == 13 and not sc.passed
+    legacy = score("t", CODE20, [], "\n".join(CODE20[:13]),
+                   primary_kinds=K20)
+    assert legacy.passed, "the default threshold must stay lenient"
+
+
 # --- output cleaning ------------------------------------------------------
 
 

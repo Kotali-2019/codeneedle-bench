@@ -150,7 +150,16 @@ def render_function(score: FunctionScore, color: bool | None = None) -> str:
     return "\n".join(out)
 
 
-def render_summary(scores: list[FunctionScore], color: bool | None = None) -> str:
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    """Nearest-rank percentile of an already-sorted list."""
+    if not sorted_values:
+        return 0.0
+    idx = max(0, min(len(sorted_values) - 1, int(round(pct / 100 * len(sorted_values))) - 1))
+    return sorted_values[idx]
+
+
+def render_summary(scores: list[FunctionScore], color: bool | None = None,
+                   latencies: list[float] | None = None) -> str:
     if color is None:
         color = color_enabled()
     errored = [s for s in scores if s.error]
@@ -185,6 +194,15 @@ def render_summary(scores: list[FunctionScore], color: bool | None = None) -> st
         f"  Hallucinated lines:    {total_halluc}",
         f"  Bonus (extra correct): {total_bonus}",
     ]
+    if latencies:
+        ordered = sorted(latencies)
+        mean = sum(ordered) / len(ordered)
+        lines.append(
+            f"  Latency s:             mean={mean:.1f}  "
+            f"p50={_percentile(ordered, 50):.1f}  "
+            f"p95={_percentile(ordered, 95):.1f}  "
+            f"max={ordered[-1]:.1f}"
+        )
     if total_reindent:
         affected = sum(1 for s in real if s.spacing_deviation)
         lines.append(

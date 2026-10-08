@@ -141,7 +141,11 @@ def test_wrong_primary_window_does_not_fill_matrix_cell(rm, tmp_path):
 
 
 def test_expected_queries_matches_real_corpora(rm):
-    assert rm.expected_queries("http_server") == 11
+    # http_server: 11 extracted minus 3 prose-dominated (min_code_lines=5).
+    # run-missing's expectation intentionally ignores the
+    # unanswerable-target exclusion, so it counts 8, not the 7 a
+    # live run produces.
+    assert rm.expected_queries("http_server") == 8
     assert rm.expected_queries("jquery") == 16
     assert rm.expected_queries("novel_16k") == 18
     assert rm.expected_queries("novel_64k") == 18

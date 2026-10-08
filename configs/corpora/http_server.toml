@@ -7,9 +7,11 @@ glob = "http_server.py"
 limit = 1
 
 [sample]
-k = 16    # falls back to all 11 since the file has fewer
+k = 16    # falls back to all 7 after min_code_lines filtering
 seed = 42
+min_code_lines = 5
 
 [scoring]
 count_comments = true
 relax_indent = false
+pass_ratio = 0.7

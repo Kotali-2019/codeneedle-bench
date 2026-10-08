@@ -200,11 +200,12 @@ limit     = 1            # optional cap on matched files (sorted lexically)
 k              = 16      # number of functions to test
 seed           = 42
 primary_lines  = 20      # widen for harder recall (novel_* uses 48)
-min_code_lines = 0       # optional: skip prose-dominated targets
+min_code_lines = 5       # skip prose-dominated targets
 
 [scoring]
 count_comments = true    # comments/docstrings earn credit (blank lines never do)
 relax_indent   = false   # strict verbatim matching for every model
+pass_ratio     = 0.7     # fraction of expected lines required to pass
 ```
 
 Shipped:
@@ -212,6 +213,32 @@ Shipped:
   with opaque identifiers/constants; these are the primary model-quality corpora
 - `http_server` — public Python standard-library code; fast smoke/control corpus
 - `jquery` — public ~280KB / ~80K-token JS; real-world long-context control
+- `tools`, `gsm8k` — special non-file corpora (tool calling, math word problems)
+- `humaneval` — execution-based code generation: all 164 problems are
+  downloaded from the MIT-licensed `openai/human-eval` dataset on first run
+  and cached in `.cache/humaneval/`. A problem passes when the generated
+  function passes its canonical unit tests, run in a subprocess
+- `fixeval` — SWE-style-lite bug fixing: 10 hand-written problems, each a
+  function with a subtle bug plus its failing test; the model must output the
+  corrected function and make the tests go green in the same harness
+
+The execution-based corpora (`humaneval`, `fixeval`) run model-generated
+code in a subprocess with a timeout (`--exec-timeout`, default 10s). That is
+the standard HumanEval execution model, **not a sandbox** — point them at
+trusted endpoints only.
+
+Two measurement details worth knowing:
+
+- `--samples N` (default 1) runs every problem N times and reports the
+  **pass@1 per-sample mean** alongside the headline solved count. At
+  temperature 0 a vLLM server can still be nondeterministic (W4A16
+  batching), so a single-run pass rate has noise; samples make it
+  visible — a problem solved by some but not all samples is categorized
+  `nondeterministic` rather than silently picking one verdict.
+- The dump records `served_model` from the server's `/v1/models`
+  listing. vLLM servers can serve one set of weights under several
+  aliases, so two "different" model ids may be the same model —
+  compare by the advertised `root`, not the id.
 
 The public corpora are useful controls but may exist in model training data.
 Do not treat them as the headline leaderboard. The novel corpora are generated
@@ -505,6 +532,18 @@ that corpus. Scoring policy cannot be set in a model config: allowing Gemma, for
 example, to ignore indentation while its peers are judged strictly would make
 the ranking invalid. The dashboard keeps non-default scoring policies in
 separate cohorts.
+
+### Thresholds and diagnostics
+
+```bash
+# Stricter pass bar for a single run (default comes from the corpus config)
+python3 bench.py run --corpus http_server --model <model> --pass-ratio 0.7
+
+# Ablation: omit the corpus from the prompt entirely. Whatever the model
+# still reproduces comes from parametric memory, not in-context retrieval —
+# comparing an ablated run against a normal run separates the two.
+python3 bench.py run --corpus jquery --model <model> --ablate
+```
 
 ## Server setup notes
 

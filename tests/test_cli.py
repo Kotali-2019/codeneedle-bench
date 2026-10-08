@@ -1,11 +1,161 @@
 """CLI-level behavior, exercised via subprocess so argparse and exit codes count."""
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import json
+import socket
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
 from bench.textio import read_text, write_text
+
+
+def _load_cli():
+    # bench.py is a script shadowed by the `bench` package,
+    # so load it directly to reach its cmd_run_all and
+    # pre-flight helpers.
+    spec = importlib.util.spec_from_file_location(
+        "bench_cli_under_test",
+        Path(__file__).resolve().parent.parent / "bench.py",
+    )
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    return cli
+
+
+def test_check_endpoint_model_variants():
+    """The --corpus all pre-flight must distinguish a
+    model the server serves (ok), one it does not (clean
+    error naming the served ids), and a server that cannot
+    verify (proceed)."""
+    cli = _load_cli()
+
+    class Handler(BaseHTTPRequestHandler):
+        mode = "listed"
+
+        def do_GET(self):
+            if self.path != "/v1/models" or self.mode == "404":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.mode == "listed":
+                body = json.dumps({"data": [
+                    {"id": "rtxA4000"}, {"id": "vllm"},
+                ]}).encode()
+            else:  # "empty"
+                body = json.dumps({"data": []}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        # Model the server serves -> ok.
+        assert cli._check_endpoint_model(url, "rtxA4000") is None
+        # Model it does not serve -> error naming the ids.
+        err = cli._check_endpoint_model(url, "gfx906")
+        assert err is not None
+        assert "gfx906" in err and "rtxA4000" in err
+        # Empty listing -> cannot verify, proceed.
+        Handler.mode = "empty"
+        assert cli._check_endpoint_model(url, "anything") is None
+        # No /v1/models at all -> cannot verify, proceed.
+        Handler.mode = "404"
+        assert cli._check_endpoint_model(url, "anything") is None
+    finally:
+        server.shutdown()
+
+
+def test_check_endpoint_model_dead_endpoint():
+    """A dead endpoint fails the pre-flight with a clean
+    'not reachable' message instead of a traceback."""
+    cli = _load_cli()
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    err = cli._check_endpoint_model(
+        f"http://127.0.0.1:{port}", "some-model")
+    assert err is not None
+    assert "not reachable" in err
+
+
+def test_cmd_run_all_validates_endpoint_before_checklist(
+        monkeypatch):
+    """Regression: the --corpus all checklist used to show
+    before the model was even resolved, so a dead endpoint
+    or a model the server refuses failed only at the first
+    query of the first selected corpus."""
+    from bench import config as bench_config
+
+    cli = _load_cli()
+    order = []
+
+    def fake_select(corpora, args):
+        order.append("checklist")
+        return []  # 'none'
+
+    def fake_check(base_url, model):
+        order.append("check")
+        return None
+
+    class FakeClient:
+        base_url = "http://x"
+        model = "m"
+        api_key = "k"
+        temperature = 0.0
+        max_tokens = 2000
+        timeout = 120.0
+
+    class FakeModel:
+        client = FakeClient()
+        name = "testmodel"
+        suppress_thinking = False
+
+    monkeypatch.setattr(bench_config, "load_model",
+                        lambda name: (FakeModel(), False))
+    monkeypatch.setattr(cli, "_select_corpora", fake_select)
+    monkeypatch.setattr(cli, "_check_endpoint_model", fake_check)
+
+    args = argparse.Namespace(
+        model="testmodel", base_url=None, api_key=None,
+        temperature=None, max_tokens=None, timeout=None,
+        think=False, skip_preflight=False, select=None,
+    )
+    assert cli.cmd_run_all(args) == 0
+    assert order == ["check", "checklist"]
+
+
+def test_cmd_run_all_dead_endpoint_fails_before_running(
+        python_bin, repo_root):
+    """End to end: with a dead endpoint the CLI exits 2
+    with a clean pre-flight error — no checklist, no
+    corpora run."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    r = run_cli(
+        python_bin, repo_root, "run", "--corpus", "all",
+        "--model", "some-model",
+        "--base-url", f"http://127.0.0.1:{port}",
+        "--select", "none",
+    )
+    out = (r.stdout or "") + (r.stderr or "")
+    assert r.returncode == 2, out
+    assert "not reachable" in out
+    assert "Running" not in out
 
 
 def run_cli(python_bin, repo_root, *args, cwd=None):
@@ -55,6 +205,45 @@ def test_bad_corpus_name_is_a_clean_error(python_bin, repo_root):
     assert "config not found" in (r.stderr + r.stdout)
 
 
+# --- hardened scoring policy ---------------------------------------------
+
+
+def test_corpus_configs_load_tuned_scoring_policy(repo_root):
+    """The hardening pass: stricter pass ratio + code-dense windows."""
+    from bench.config import load_corpus
+
+    for name in ("http_server", "jquery", "rustproj", "cppproj"):
+        cfg = load_corpus(name)
+        assert cfg.pass_ratio == pytest.approx(0.7), name
+        assert cfg.min_code_lines == 5, name
+
+
+def test_http_server_extract_drops_prose_dominated(python_bin, repo_root):
+    """Docstring-heavy windows must not pad the recall average."""
+    r = run_cli(python_bin, repo_root, "extract", "--corpus", "http_server")
+    assert r.returncode == 0, r.stderr
+    assert "filtered to 7 target(s)" in r.stdout
+
+
+def test_bad_pass_ratio_is_a_config_error(tmp_path):
+    from bench.config import load_corpus
+
+    p = tmp_path / "bad-ratio.toml"
+    write_text(p, """
+[files]
+directory = "fixtures"
+glob = "http_server.py"
+limit = 1
+[sample]
+k = 16
+seed = 42
+[scoring]
+pass_ratio = 1.5
+""")
+    with pytest.raises(ValueError, match="pass_ratio"):
+        load_corpus(p)
+
+
 @pytest.mark.parametrize("flags", [
     ("--relax-indent", "--strict-indent"),
     ("--no-comments", "--count-comments"),
@@ -80,7 +269,10 @@ def test_extract_reports_composition(python_bin, repo_root):
 
 
 def test_extract_warns_about_prose_targets(python_bin, repo_root):
-    r = run_cli(python_bin, repo_root, "extract", "--corpus", "http_server")
+    # The corpus config now filters thin targets (min_code_lines=5);
+    # opt out to exercise the warning path itself.
+    r = run_cli(python_bin, repo_root, "extract", "--corpus", "http_server",
+                "--min-code-lines", "0")
     assert "prose-dominated" in r.stdout
     assert "log_message(1)" in r.stdout
 
