@@ -121,6 +121,7 @@ def test_cmd_run_all_validates_endpoint_before_checklist(
     class FakeModel:
         client = FakeClient()
         name = "testmodel"
+        label = None
         suppress_thinking = False
 
     monkeypatch.setattr(bench_config, "load_model",
@@ -135,6 +136,253 @@ def test_cmd_run_all_validates_endpoint_before_checklist(
     )
     assert cli.cmd_run_all(args) == 0
     assert order == ["check", "checklist"]
+
+
+def test_cmd_run_all_forwards_corpus_scoring_policy(
+        monkeypatch):
+    """Regression: --corpus all used to drop the corpus
+    config's min_code_lines, so http_server ran its
+    prose-dominated targets (the 'mostly comments' warning)
+    instead of the stricter policy the config intends."""
+    from bench import config as bench_config
+    from bench import extract as bench_extract
+    from bench import runner as bench_runner
+
+    cli = _load_cli()
+    captured = {}
+
+    class FakeTarget:
+        name = "parse_request"
+
+    class FakeSource:
+        targets = [FakeTarget()]
+        language = "py"
+
+    class FakeClient:
+        base_url = "http://x"
+        model = "m"
+        api_key = "k"
+        temperature = 0.0
+        max_tokens = 2000
+        timeout = 120.0
+
+    class FakeModel:
+        client = FakeClient()
+        name = "testmodel"
+        label = None
+        suppress_thinking = False
+
+    def fake_run_benchmark(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(bench_config, "load_model",
+                        lambda name: (FakeModel(), False))
+    monkeypatch.setattr(cli, "_select_corpora",
+                        lambda c, a: ["http_server"])
+    monkeypatch.setattr(cli, "_check_endpoint_model",
+                        lambda b, m: None)
+    monkeypatch.setattr(bench_extract, "load_source_glob",
+                        lambda d, g, limit: FakeSource())
+    monkeypatch.setattr(bench_runner, "run_benchmark",
+                        fake_run_benchmark)
+
+    args = argparse.Namespace(
+        model="testmodel", base_url=None, api_key=None,
+        temperature=None, max_tokens=None, timeout=None,
+        think=False, skip_preflight=True, select=None,
+        k=None, seed=None, function=None,
+        relax_indent=False, strict_indent=False,
+        no_comments=False, count_comments=False,
+        pass_ratio=None, min_code_lines=None,
+        no_fail_fast=True, fail_fast_after=2,
+    )
+    cli.cmd_run_all(args)
+    # http_server.toml: min_code_lines=5, pass_ratio=0.7,
+    # relax_indent=false, count_comments=true.
+    assert captured["min_code_lines"] == 5
+    assert captured["pass_ratio"] == 0.7
+    assert captured["relax_indent"] is False
+    assert captured["count_comments"] is True
+
+    # CLI flags override the corpus policy.
+    captured.clear()
+    args.relax_indent = True
+    args.min_code_lines = 3
+    cli.cmd_run_all(args)
+    assert captured["relax_indent"] is True
+    assert captured["min_code_lines"] == 3
+
+
+def test_fs_label():
+    """Dump filenames must be filesystem-safe."""
+    cli = _load_cli()
+    assert cli._fs_label(
+        "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4"
+    ) == "cyankiwi-Ornith-1.5-35B-A3B-AWQ-INT4"
+    assert cli._fs_label("rtxA4000") == "rtxA4000"
+    assert cli._fs_label("a:b*c?d") == "a-b-c-d"
+    assert cli._fs_label("///") == "model"
+
+
+def test_resolve_model_name_prefers_served_root():
+    """The real model name is the server's root HF
+    id; the CLI id is often just an alias."""
+    cli = _load_cli()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/v1/models":
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = json.dumps({"data": [
+                {"id": "gfx906",
+                 "root": "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4",
+                 "max_model_len": 130000},
+            ]}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        name, served = cli._resolve_model_name(url, "gfx906", "fallback")
+        assert name == "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4"
+        assert served["id"] == "gfx906"
+        assert served["max_model_len"] == 130000
+    finally:
+        server.shutdown()
+
+    # No root advertised -> caller's fallback label.
+    class NoRootHandler(Handler):
+        def do_GET(self):
+            if self.path != "/v1/models":
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = json.dumps({"data": [{"id": "m"}]}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server2 = HTTPServer(("127.0.0.1", 0), NoRootHandler)
+    threading.Thread(target=server2.serve_forever, daemon=True).start()
+    url2 = f"http://127.0.0.1:{server2.server_port}"
+    try:
+        name, served = cli._resolve_model_name(url2, "m", "My Label")
+        assert name == "My Label"
+        assert served == {"id": "m", "root": None, "max_model_len": None}
+    finally:
+        server2.shutdown()
+
+    # Unreachable endpoint -> fallback, never fatal.
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    name, served = cli._resolve_model_name(
+        f"http://127.0.0.1:{port}", "m", "fallback")
+    assert name == "fallback"
+    assert served is None
+
+
+def test_cmd_run_all_saves_under_served_root(monkeypatch):
+    """Regression: --corpus all dumps used to be named
+    after the CLI alias (e.g. 'gfx906'); the server's
+    root HF id is the real model name."""
+    from bench import config as bench_config
+    from bench import extract as bench_extract
+    from bench import runner as bench_runner
+
+    cli = _load_cli()
+    captured = {}
+
+    class FakeTarget:
+        name = "parse_request"
+
+    class FakeSource:
+        targets = [FakeTarget()]
+        language = "py"
+
+    class FakeClient:
+        base_url = None  # filled per-server below
+        model = "gfx906"
+        api_key = "k"
+        temperature = 0.0
+        max_tokens = 2000
+        timeout = 120.0
+
+    class FakeModel:
+        client = FakeClient()
+        name = "gfx906"
+        label = None
+        suppress_thinking = False
+
+    def fake_run_benchmark(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(bench_config, "load_model",
+                        lambda name: (FakeModel(), False))
+    monkeypatch.setattr(cli, "_select_corpora",
+                        lambda c, a: ["http_server"])
+    monkeypatch.setattr(bench_extract, "load_source_glob",
+                        lambda d, g, limit: FakeSource())
+    monkeypatch.setattr(bench_runner, "run_benchmark",
+                        fake_run_benchmark)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/v1/models":
+                self.send_response(404)
+                self.end_headers()
+                return
+            body = json.dumps({"data": [
+                {"id": "gfx906",
+                 "root": "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4"},
+            ]}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    FakeClient.base_url = f"http://127.0.0.1:{server.server_port}"
+    args = argparse.Namespace(
+        model="gfx906", base_url=None, api_key=None,
+        temperature=None, max_tokens=None, timeout=None,
+        think=False, skip_preflight=True, select=None,
+        k=None, seed=None, function=None,
+        relax_indent=False, strict_indent=False,
+        no_comments=False, count_comments=False,
+        pass_ratio=None, min_code_lines=None,
+        no_fail_fast=True, fail_fast_after=2,
+        notes=None,
+    )
+    try:
+        cli.cmd_run_all(args)
+    finally:
+        server.shutdown()
+
+    assert captured["model_label"] == (
+        "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4")
+    assert captured["dump_path"].name == (
+        "cyankiwi-Ornith-1.5-35B-A3B-AWQ-INT4__all-py.json")
 
 
 def test_cmd_run_all_dead_endpoint_fails_before_running(

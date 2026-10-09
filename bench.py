@@ -246,6 +246,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         model.client.timeout = args.timeout
     suppress_thinking = model.suppress_thinking and not args.think
 
+    # Save the run under the real model name: the
+    # server's advertised root HF id when it reports
+    # one (the CLI id is often just an alias), else
+    # the configured label, else the id.
+    model_name, _served = _resolve_model_name(
+        model.client.base_url, model.client.model,
+        model.label or model.name,
+    )
+
     if corpus is not None:
         k = args.k if args.k is not None else corpus.sample_k
         seed = args.seed if args.seed is not None else corpus.sample_seed
@@ -258,7 +267,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         if corpus is not None:
-            dump_path = auto_dump_path(corpus, model, DEFAULT_RESULTS_DIR)
+            dump_path = auto_dump_path(
+                corpus, model, DEFAULT_RESULTS_DIR,
+                name=_fs_label(model_name),
+            )
         else:
             # --file mode: derive corpus stem from filename
             from bench.config import CorpusConfig
@@ -272,7 +284,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                 sample_seed=seed,
                 primary_lines=20,
             )
-            dump_path = auto_dump_path(synthetic_corpus, model, DEFAULT_RESULTS_DIR)
+            dump_path = auto_dump_path(
+                synthetic_corpus, model, DEFAULT_RESULTS_DIR,
+                name=_fs_label(model_name),
+            )
         # Tag explicit --function subsets in the filename so they don't clobber
         # the full-corpus dump (mirrors the tools corpus behavior).
         if args.function and args.function != ["all"]:
@@ -320,7 +335,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             args.min_code_lines if args.min_code_lines is not None
             else (corpus.min_code_lines if corpus is not None else 0)
         ),
-        model_label=model.label,
+        model_label=model_name,
         pass_ratio=(
             args.pass_ratio if args.pass_ratio is not None
             else (corpus.pass_ratio if corpus is not None else 0.4)
@@ -360,6 +375,13 @@ def cmd_run_tools(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         model.client.timeout = args.timeout
 
+    # Save under the real model name (server's root
+    # HF id when it reports one), not the CLI alias.
+    model_name, _served = _resolve_model_name(
+        model.client.base_url, model.client.model,
+        model.label or model.name,
+    )
+
     # --function filters to specific tools; 'all' means the full corpus.
     fn_filter = args.function if args.function else None
     if fn_filter == ["all"]:
@@ -371,7 +393,7 @@ def cmd_run_tools(args: argparse.Namespace) -> int:
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         # Tag filtered runs so they don't clobber a full-corpus dump.
         suffix = f"__{','.join(fn_filter)}" if fn_filter else ""
-        dump_path = DEFAULT_RESULTS_DIR / f"tools__{model.name}{suffix}.json"
+        dump_path = DEFAULT_RESULTS_DIR / f"tools__{_fs_label(model_name)}{suffix}.json"
 
     scores = run_toolcall_benchmark(
         base_url=model.client.base_url,
@@ -411,6 +433,13 @@ def cmd_run_gsm8k(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         model.client.timeout = args.timeout
 
+    # Save under the real model name (server's root
+    # HF id when it reports one), not the CLI alias.
+    model_name, _served = _resolve_model_name(
+        model.client.base_url, model.client.model,
+        model.label or model.name,
+    )
+
     # --function filters to specific problems; 'all' means the full corpus.
     fn_filter = args.function if args.function else None
     if fn_filter == ["all"]:
@@ -422,7 +451,7 @@ def cmd_run_gsm8k(args: argparse.Namespace) -> int:
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         # Tag filtered runs so they don't clobber a full-corpus dump.
         suffix = f"__{','.join(fn_filter)}" if fn_filter else ""
-        dump_path = DEFAULT_RESULTS_DIR / f"gsm8k__{model.name}{suffix}.json"
+        dump_path = DEFAULT_RESULTS_DIR / f"gsm8k__{_fs_label(model_name)}{suffix}.json"
 
     scores = run_gsm8k_benchmark(
         base_url=model.client.base_url,
@@ -462,6 +491,13 @@ def cmd_run_humaneval(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         model.client.timeout = args.timeout
 
+    # Save under the real model name (server's root
+    # HF id when it reports one), not the CLI alias.
+    model_name, _served = _resolve_model_name(
+        model.client.base_url, model.client.model,
+        model.label or model.name,
+    )
+
     if args.relax_indent:
         print(
             "note: --relax-indent is a no-op for humaneval "
@@ -486,7 +522,7 @@ def cmd_run_humaneval(args: argparse.Namespace) -> int:
         suffix = f"__{flat}" if flat else ""
         suffix = "".join(c if c.isalnum() or c == "_" else "-"
                          for c in suffix)
-        dump_path = DEFAULT_RESULTS_DIR / f"humaneval__{model.name}{suffix}.json"
+        dump_path = DEFAULT_RESULTS_DIR / f"humaneval__{_fs_label(model_name)}{suffix}.json"
 
     scores = run_humaneval_benchmark(
         base_url=model.client.base_url,
@@ -528,6 +564,13 @@ def cmd_run_fixeval(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         model.client.timeout = args.timeout
 
+    # Save under the real model name (server's root
+    # HF id when it reports one), not the CLI alias.
+    model_name, _served = _resolve_model_name(
+        model.client.base_url, model.client.model,
+        model.label or model.name,
+    )
+
     if args.relax_indent:
         print(
             "note: --relax-indent is a no-op for fixeval "
@@ -550,7 +593,7 @@ def cmd_run_fixeval(args: argparse.Namespace) -> int:
         suffix = f"__{flat}" if flat else ""
         suffix = "".join(c if c.isalnum() or c == "_" else "-"
                          for c in suffix)
-        dump_path = DEFAULT_RESULTS_DIR / f"fixeval__{model.name}{suffix}.json"
+        dump_path = DEFAULT_RESULTS_DIR / f"fixeval__{_fs_label(model_name)}{suffix}.json"
 
     scores = run_fixeval_benchmark(
         base_url=model.client.base_url,
@@ -687,6 +730,38 @@ def _check_endpoint_model(base_url: str, model: str) -> str | None:
             f"served ids: {', '.join(ids)}")
 
 
+def _fs_label(name: str) -> str:
+    """Flatten a model id (e.g. 'cyankiwi/Ornith-1.5')
+    into something safe for a dump filename."""
+    flat = "".join(
+        c if c.isalnum() or c in ".-_" else "-" for c in name
+    ).strip("-")
+    return flat or "model"
+
+
+def _resolve_model_name(base_url: str, model_id: str,
+                        fallback: str | None = None
+                        ) -> tuple[str, dict | None]:
+    """The real name of the model behind an id.
+
+    Ids like 'gfx906' are often just aliases the user
+    declared for the client; the server's advertised
+    `root` is the actual HF model that served the run.
+    Falls back to the caller's label, then the id,
+    when the server does not report a root (never
+    fatal — the benchmark still runs).
+    """
+    from bench.client import served_model_identity
+
+    served = None
+    try:
+        served = served_model_identity(base_url, model_id)
+    except Exception:
+        served = None
+    root = (served or {}).get("root")
+    return (root or fallback or model_id), served
+
+
 def _select_corpora(corpora: list[str], args: argparse.Namespace) -> list[str]:
     """Resolve which corpora to run for --corpus all.
 
@@ -783,6 +858,15 @@ def cmd_run_all(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             raise SystemExit(2)
 
+    # Save the run under the real model name: the
+    # server's advertised root HF id when it reports
+    # one (the CLI id is often just an alias), else
+    # the configured label, else the id.
+    model_name, _served = _resolve_model_name(
+        model.client.base_url, model.client.model,
+        model.label or model.name,
+    )
+
     selected = _select_corpora(candidates, args)
     if not selected:
         return 0  # 'none' — _select_corpora already said goodbye
@@ -836,10 +920,14 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         pass_ratio = (
             args.pass_ratio if args.pass_ratio is not None else corpus.pass_ratio
         )
+        min_code_lines = (
+            args.min_code_lines if args.min_code_lines is not None
+            else corpus.min_code_lines
+        )
 
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         lang_tag = src.language
-        dump_path = DEFAULT_RESULTS_DIR / f"{model.name}__all-{lang_tag}.json"
+        dump_path = DEFAULT_RESULTS_DIR / f"{_fs_label(model_name)}__all-{lang_tag}.json"
 
         # Expand --function all to every extracted function name for this corpus.
         fn_filter = (
@@ -861,6 +949,8 @@ def cmd_run_all(args: argparse.Namespace) -> int:
             relax_indent=relax_indent,
             count_comments=count_comments,
             pass_ratio=pass_ratio,
+            min_code_lines=min_code_lines,
+            model_label=model_name,
         )
         passed = sum(1 for s in scores if s.passed)
         total = len(scores)

@@ -239,6 +239,11 @@ Two measurement details worth knowing:
   listing. vLLM servers can serve one set of weights under several
   aliases, so two "different" model ids may be the same model —
   compare by the advertised `root`, not the id.
+- Dumps are saved under the real model name: the server's
+  advertised `root` HF id (e.g. `cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4`)
+  when it reports one, not the CLI alias. The id actually sent in
+  API calls stays in `model`; the real name is in `model_label`
+  (and the dump filename).
 
 The public corpora are useful controls but may exist in model training data.
 Do not treat them as the headline leaderboard. The novel corpora are generated

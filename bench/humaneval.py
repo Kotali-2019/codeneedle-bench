@@ -35,8 +35,16 @@ from pathlib import Path
 
 import httpx
 
-from .client import ClientConfig, chat_complete
+from .client import (
+    ClientConfig,
+    chat_complete,
+    served_model_identity,
+)
 from .runner import _check_aborted, _install_interrupt_handler
+
+# Kept under the historical private name so existing
+# monkeypatches (tests) and call sites keep working.
+_served_model_identity = served_model_identity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -563,33 +571,6 @@ def _model_config(base_url, model, api_key, temperature, max_tokens, timeout):
     )
 
 
-def _served_model_identity(base_url: str, model: str) -> dict | None:
-    """Ask the server which model an id maps to.
-
-    vLLM servers can serve one set of weights under several
-    aliases (e.g. `rtxA4000` AND `claude-opus-5`), so two
-    "different" model ids can be the same model. Recording the
-    advertised `root` model in the dump makes that visible
-    instead of silently comparing a model against itself.
-    Returns None when the server does not answer (never
-    fatal — the benchmark still runs).
-    """
-    try:
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.get(base_url.rstrip("/") + "/v1/models")
-            resp.raise_for_status()
-            for entry in resp.json().get("data", []):
-                if entry.get("id") == model:
-                    return {
-                        "id": entry.get("id"),
-                        "root": entry.get("root"),
-                        "max_model_len": entry.get("max_model_len"),
-                    }
-    except Exception:
-        return None
-    return None
-
-
 def _aggregate_samples(sample_results: list[dict]) -> tuple[bool, str]:
     """Fold per-sample results into (passed, category).
 
@@ -879,6 +860,10 @@ def _dump_results(scores, benchmark: str, model: str, base_url: str,
     payload = {
         "benchmark": benchmark,
         "model": model,
+        # The real model name: the server's advertised
+        # root HF id when it reports one (the id sent in
+        # API calls is often just a CLI alias).
+        "model_label": (served_model or {}).get("root") or model,
         "base_url": base_url,
         "total_tests": len(scores),
         "total_passed": sum(1 for s in scores if s.passed),

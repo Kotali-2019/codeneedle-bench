@@ -265,5 +265,12 @@ def load_model(name_or_path: str | Path) -> tuple[ModelConfig, bool]:
 # --- output naming --------------------------------------------------------
 
 
-def auto_dump_path(corpus: CorpusConfig, model: ModelConfig, results_dir: Path) -> Path:
-    return results_dir / f"{corpus.name}__{model.name}.json"
+def auto_dump_path(corpus: CorpusConfig, model: ModelConfig, results_dir: Path,
+                   name: str | None = None) -> Path:
+    """Default dump location: <corpus>__<model>.json.
+
+    `name` overrides the model's dump name — callers pass
+    the served root HF id so dumps are saved under the
+    real model name rather than a CLI alias.
+    """
+    return results_dir / f"{corpus.name}__{name or model.name}.json"

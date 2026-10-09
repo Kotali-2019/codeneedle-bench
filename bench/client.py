@@ -41,6 +41,33 @@ def list_served_models(base_url: str, timeout: float = 10.0) -> list[dict] | Non
         return None
 
 
+def served_model_identity(base_url: str, model: str) -> dict | None:
+    """Ask the server which model an id maps to.
+
+    vLLM servers can serve one set of weights under several
+    aliases (e.g. `rtxA4000` AND `claude-opus-5`), so two
+    "different" model ids can be the same model. The
+    advertised `root` model (the real HF id) makes that
+    visible instead of silently comparing a model against
+    itself. Returns None when the server does not answer
+    (never fatal — the benchmark still runs).
+    """
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(base_url.rstrip("/") + "/v1/models")
+            resp.raise_for_status()
+            for entry in resp.json().get("data", []):
+                if entry.get("id") == model:
+                    return {
+                        "id": entry.get("id"),
+                        "root": entry.get("root"),
+                        "max_model_len": entry.get("max_model_len"),
+                    }
+    except Exception:
+        return None
+    return None
+
+
 def chat_complete(cfg: ClientConfig, system: str | None, user: str) -> str:
     messages: list[dict] = []
     if system:

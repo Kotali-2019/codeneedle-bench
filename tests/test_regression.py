@@ -72,12 +72,17 @@ def _stored(repo_root):
 
 def test_stored_results_contained_real_blank_inflation(repo_root, py_source,
                                                        js_source):
-    """~22% of the old matched-line total across every shipped run was blanks."""
+    """~22% of the old matched-line total across every shipped run was blanks.
+
+    Only runs whose stored scores actually contained blank credit
+    count: strict-policy runs (old == new) would otherwise dilute
+    the ratio as the results directory grows.
+    """
     by_corpus = {
         "http_server": {t.name: t for t in py_source.targets},
         "jquery": {t.name: t for t in js_source.targets},
     }
-    old = new = 0
+    inflated = []
     for p in _stored(repo_root):
         d = json.loads(read_text(p))
         corpus = pathlib.Path(p).stem.split("__")[0]
@@ -85,6 +90,7 @@ def test_stored_results_contained_real_blank_inflation(repo_root, py_source,
             continue
         relax = bool((d.get("scoring") or {}).get(
             "relax_indent", d.get("relax_indent", False)))
+        old = new = 0
         for r in d["results"]:
             t = by_corpus[corpus].get(r["function"])
             if t is None or r.get("error"):
@@ -94,7 +100,11 @@ def test_stored_results_contained_real_blank_inflation(repo_root, py_source,
                        primary_kinds=t.primary_kinds, bonus_kinds=t.bonus_kinds)
             old += r["primary_matched"]
             new += sc.primary_matched
-    assert old > 0
+        if old > new:
+            inflated.append((old, new))
+    assert inflated, "no stored run showed blank-line credit"
+    old = sum(o for o, _ in inflated)
+    new = sum(n for _, n in inflated)
     removed = (old - new) / old
     assert removed > 0.15, (
         f"expected substantial blank-line credit in the stored runs, got {removed:.1%}"

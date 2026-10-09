@@ -367,6 +367,36 @@ def test_run_humaneval_empty_response_is_flagged(
     assert "--max-tokens" in out
 
 
+def test_dump_results_records_served_root_as_label(
+        tmp_path):
+    """The dump's model_label is the served root HF
+    id; 'model' stays the id actually sent in API
+    calls (often just a CLI alias)."""
+    from bench.humaneval import _dump_results
+
+    dump = tmp_path / "humaneval__x.json"
+    _dump_results(
+        [], "humaneval", "gfx906", "http://x", dump,
+        render=lambda sc: {},
+        served_model={"id": "gfx906",
+                      "root": "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4",
+                      "max_model_len": 130000},
+    )
+    payload = json.loads(dump.read_text(encoding="utf-8"))
+    assert payload["model"] == "gfx906"
+    assert payload["model_label"] == (
+        "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4")
+
+    # No root advertised -> label falls back to the id.
+    dump2 = tmp_path / "humaneval__y.json"
+    _dump_results(
+        [], "fixeval", "rtxA4000", "http://x", dump2,
+        render=lambda sc: {}, served_model=None,
+    )
+    payload2 = json.loads(dump2.read_text(encoding="utf-8"))
+    assert payload2["model_label"] == "rtxA4000"
+
+
 def test_served_model_identity_detects_alias():
     """A vLLM server can serve one set of weights under
     several aliases; the probe records the advertised root
@@ -440,6 +470,7 @@ def test_cmd_run_humaneval_warning_and_flat_suffix(
     class FakeModel:
         client = FakeClient()
         name = "testmodel"
+        label = None
 
     monkeypatch.setattr(bench_config, "load_model",
                         lambda name: (FakeModel(), False))
