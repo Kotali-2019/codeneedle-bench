@@ -333,6 +333,11 @@ def dashboard(metrics_text: str) -> Table:
         f"{virt:.2f} GB",
     )
 
+    table.add_row(
+        "Last Updated",
+        time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
     return table
 
 
