@@ -2,6 +2,7 @@
 # cmdc-support.sh — one-shot support container for Command Code (cmdc)
 # Usage:  export COMMAND_CODE_API_KEY="sk-..." && ./cmdc-support.sh
 # On exit (Ctrl+D / 'exit'), the container is nuked and secrets wiped.
+# One shot cli : curl -fsSL https://raw.githubusercontent.com/Kotali-2019/codeneedle-bench/main/cmdc-support.sh -o cmdc-support.sh && chmod +x cmdc-support.sh
 set -euo pipefail
 
 IMAGE_NAME="cmdc-support:latest"
