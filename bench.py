@@ -826,7 +826,7 @@ def _select_corpora(corpora: list[str], args: argparse.Namespace) -> list[str]:
 
 def cmd_run_all(args: argparse.Namespace) -> int:
     from bench.config import auto_dump_path, load_corpus, load_model
-    from bench.extract import load_source_glob
+    from bench.extract import configure_primary_window, load_source_glob
     from bench.report import render_summary
     from bench.runner import run_benchmark
 
@@ -890,6 +890,7 @@ def cmd_run_all(args: argparse.Namespace) -> int:
 
     all_scores = []
     corpus_results = []
+    skipped: list[tuple[str, str]] = []
     any_failure = False
 
     for corpus_name in corpora:
@@ -901,6 +902,11 @@ def cmd_run_all(args: argparse.Namespace) -> int:
 
         corpus = load_corpus(corpus_name)
         src = load_source_glob(corpus.directory, corpus.glob, corpus.limit)
+        # The corpus config owns the recall window. Without this the window
+        # stays at the extractor floor (20) while min_code_lines can be larger
+        # (novel_* ask for 48 and 46), filtering every target away. cmd_run
+        # applies the same call through _resolve_source.
+        configure_primary_window(src, corpus.primary_lines)
 
         # Validate an explicit --function subset against what this corpus can
         # extract, so a typo fails fast with the available names.
@@ -938,32 +944,44 @@ def cmd_run_all(args: argparse.Namespace) -> int:
         )
 
         DEFAULT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        lang_tag = src.language
-        dump_path = DEFAULT_RESULTS_DIR / f"{_fs_label(model_name)}__all-{lang_tag}.json"
+        # Key the dump by corpus, not language: several corpora share one
+        # language (four are Python) and would otherwise overwrite one file.
+        dump_path = DEFAULT_RESULTS_DIR / f"{_fs_label(model_name)}__all-{corpus_name}.json"
 
-        # Expand --function all to every extracted function name for this corpus.
-        fn_filter = (
-            args.function if args.function else None
-        )
+        # The corpus's fixed paired sample is the default cohort, exactly as in
+        # single-corpus runs; --function overrides it.
+        fn_filter = args.function if args.function else corpus.sample_functions
         if fn_filter == ["all"]:
             fn_filter = [t.name for t in src.targets]
 
-        scores = run_benchmark(
-            source=src,
-            cfg=model.client,
-            k=k,
-            seed=seed,
-            dump_path=dump_path,
-            function_filter=fn_filter,
-            suppress_thinking=suppress_thinking,
-            skip_preflight=args.skip_preflight,
-            fail_fast_after=None if args.no_fail_fast else args.fail_fast_after,
-            relax_indent=relax_indent,
-            count_comments=count_comments,
-            pass_ratio=pass_ratio,
-            min_code_lines=min_code_lines,
-            model_label=model_name,
-        )
+        try:
+            scores = run_benchmark(
+                source=src,
+                cfg=model.client,
+                k=k,
+                seed=seed,
+                dump_path=dump_path,
+                function_filter=fn_filter,
+                suppress_thinking=suppress_thinking,
+                skip_preflight=args.skip_preflight,
+                fail_fast_after=None if args.no_fail_fast else args.fail_fast_after,
+                relax_indent=relax_indent,
+                count_comments=count_comments,
+                pass_ratio=pass_ratio,
+                min_code_lines=min_code_lines,
+                model_label=model_name,
+            )
+        except SystemExit as e:
+            # One unusable corpus must not discard the rest of a batch run.
+            # Pre-flight failures exit with code 2 (the endpoint or model is
+            # broken for every corpus) and still abort the whole run.
+            if e.code == 2:
+                raise
+            print(f"\n⚠ skipped corpus {corpus_name}: {e.code}",
+                  file=sys.stderr, flush=True)
+            skipped.append((corpus_name, str(e.code)))
+            any_failure = True
+            continue
         passed = sum(1 for s in scores if s.passed)
         total = len(scores)
         corpus_results.append((corpus_name, passed, total, scores))
@@ -1085,6 +1103,11 @@ def cmd_run_all(args: argparse.Namespace) -> int:
             sp_note = f"  spacing={spacing}" if spacing else ""
             print(f"  {status} {corpus_name:<20} {passed}/{total} passed  "
                   f"lines={matched}/{possible}{sp_note}", flush=True)
+
+    if skipped:
+        print("\n⚠ skipped corpora (nothing to run):", file=sys.stderr, flush=True)
+        for name, reason in skipped:
+            print(f"  - {name}: {reason}", file=sys.stderr, flush=True)
 
     print(flush=True)
     print(render_summary(all_scores), flush=True)

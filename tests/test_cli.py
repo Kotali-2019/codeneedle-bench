@@ -184,6 +184,8 @@ def test_cmd_run_all_forwards_corpus_scoring_policy(
                         lambda b, m: None)
     monkeypatch.setattr(bench_extract, "load_source_glob",
                         lambda d, g, limit: FakeSource())
+    monkeypatch.setattr(bench_extract, "configure_primary_window",
+                        lambda src, n: src)
     monkeypatch.setattr(bench_runner, "run_benchmark",
                         fake_run_benchmark)
 
@@ -338,6 +340,8 @@ def test_cmd_run_all_saves_under_served_root(monkeypatch):
                         lambda c, a: ["http_server"])
     monkeypatch.setattr(bench_extract, "load_source_glob",
                         lambda d, g, limit: FakeSource())
+    monkeypatch.setattr(bench_extract, "configure_primary_window",
+                        lambda src, n: src)
     monkeypatch.setattr(bench_runner, "run_benchmark",
                         fake_run_benchmark)
 
@@ -382,7 +386,79 @@ def test_cmd_run_all_saves_under_served_root(monkeypatch):
     assert captured["model_label"] == (
         "cyankiwi/Ornith-1.5-35B-A3B-AWQ-INT4")
     assert captured["dump_path"].name == (
-        "cyankiwi-Ornith-1.5-35B-A3B-AWQ-INT4__all-py.json")
+        "cyankiwi-Ornith-1.5-35B-A3B-AWQ-INT4__all-http_server.json")
+
+
+def test_cmd_run_all_applies_corpus_window_and_paired_sample(monkeypatch):
+    """Regression: --corpus all skipped configure_primary_window(), so a corpus
+    asking for primary_lines=48 with min_code_lines=46 (novel_*) filtered every
+    target away and aborted the batch. It also ignored sample.functions, and
+    keyed dumps by language so four Python corpora overwrote one file."""
+    from bench import config as bench_config
+    from bench import extract as bench_extract
+    from bench import runner as bench_runner
+
+    cli = _load_cli()
+    captured = {}
+    windows = []
+
+    class FakeTarget:
+        name = "needle_0000_58vataaa7b"
+
+    class FakeSource:
+        targets = [FakeTarget()]
+        language = "py"
+
+    class FakeClient:
+        base_url = "http://x"
+        model = "gfx906"
+        api_key = "k"
+        temperature = 0.0
+        max_tokens = 2000
+        timeout = 120.0
+
+    class FakeModel:
+        client = FakeClient()
+        name = "gfx906"
+        label = None
+        suppress_thinking = False
+
+    def fake_run_benchmark(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(bench_config, "load_model",
+                        lambda name: (FakeModel(), False))
+    monkeypatch.setattr(cli, "_select_corpora", lambda c, a: ["novel_64k"])
+    monkeypatch.setattr(cli, "_resolve_model_name",
+                        lambda b, m, f: ("gfx906", None))
+    monkeypatch.setattr(bench_extract, "load_source_glob",
+                        lambda d, g, limit: FakeSource())
+    monkeypatch.setattr(bench_extract, "configure_primary_window",
+                        lambda src, n: windows.append(n) or src)
+    monkeypatch.setattr(bench_runner, "run_benchmark",
+                        fake_run_benchmark)
+
+    args = argparse.Namespace(
+        model="gfx906", base_url=None, api_key=None,
+        temperature=None, max_tokens=None, timeout=None,
+        think=False, skip_preflight=True, select=None,
+        k=None, seed=None, function=None,
+        relax_indent=False, strict_indent=False,
+        no_comments=False, count_comments=False,
+        pass_ratio=None, min_code_lines=None,
+        no_fail_fast=True, fail_fast_after=2,
+    )
+    assert cli.cmd_run_all(args) == 0
+
+    # novel_64k.toml: primary_lines=48, min_code_lines=46, 18 paired needles.
+    from bench.config import load_corpus
+
+    assert windows == [48]
+    assert captured["min_code_lines"] == 46
+    assert captured["k"] == 18
+    assert captured["function_filter"] == load_corpus("novel_64k").sample_functions
+    assert captured["dump_path"].name == "gfx906__all-novel_64k.json"
 
 
 def test_cmd_run_all_dead_endpoint_fails_before_running(
