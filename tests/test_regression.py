@@ -198,3 +198,123 @@ primary_lines = 19
 ''')
     with pytest.raises(ValueError, match="primary_lines must be at least 20"):
         load_corpus(p)
+
+
+# --- endpoint URL handling --------------------------------------------------
+
+
+def _openai_stub_server():
+    """Serve OpenAI endpoints under exactly one /v1 and 404 everything else.
+
+    Mirrors the vLLM router behind the bug: GET /v1/models lists one real id,
+    POST /v1/chat/completions answers any model EXCEPT 'strict-rejected' (which
+    it refuses with 400), and any path that is not exactly one of those two
+    returns 404 — so a client that double-prefixes /v1 hits 404 on every call.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    completion = {
+        "id": "x", "object": "chat.completion", "created": 0, "model": "served",
+        "choices": [{"index": 0,
+                     "message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code, payload):
+            body = json.dumps(payload).encode()
+            self.send_response(code)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/v1/models":
+                self._send(200, {"data": [{"id": "qwen-ud-iq2_xs", "object": "model"}]})
+            else:
+                self._send(404, {"error": {"message": "not found"}})
+
+        def do_POST(self):
+            n = int(self.headers.get("content-length", 0))
+            try:
+                model = json.loads(self.rfile.read(n)).get("model")
+            except Exception:
+                model = None
+            if self.path != "/v1/chat/completions":
+                self._send(404, {"error": {"message": "not found"}})
+            elif model == "strict-rejected":
+                self._send(400, {"error": {"message": "model not served"}})
+            else:
+                self._send(200, completion)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_api_base_normalizes_both_url_forms():
+    """The OpenAI-SDK form (…/v1) and the LM Studio form (…) collapse to one /v1.
+
+    Joining /v1 onto an already-/v1 base double-prefixes it (…/v1/v1/models ->
+    404); api_base must return exactly one trailing /v1 for every accepted form.
+    """
+    from bench.client import api_base
+
+    for url in ("http://h:8888", "http://h:8888/", "http://h:8888/v1",
+                "http://h:8888/v1/"):
+        assert api_base(url) == "http://h:8888/v1", url
+    # A path prefix on the host is kept, not truncated.
+    assert api_base("http://host/gateway") == "http://host/gateway/v1"
+
+
+def test_chat_complete_accepts_url_with_and_without_v1():
+    """Every request must reach the server for BOTH base_url forms.
+
+    Regression: with base_url ending in /v1 the client built /v1/v1/... and the
+    router 404'd it — the pre-flight passed (listing 'not verifiable') so the
+    user only hit 404 after choosing a corpus.
+    """
+    from bench.client import ClientConfig, chat_complete, list_served_models
+
+    server = _openai_stub_server()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        for form in (base, base + "/v1"):
+            cfg = ClientConfig(base_url=form, model="gfx906",
+                               max_tokens=8, timeout=10.0)
+            assert chat_complete(cfg, system=None, user="ok") == "ok", form
+            assert list_served_models(form) is not None, form
+    finally:
+        server.shutdown()
+
+
+def test_preflight_accepts_alias_and_rejects_unserved(repo_root):
+    """A served alias absent from /v1/models is accepted; a refused id is fatal.
+
+    The /v1/models listing is a hint, not proof: an alias (gfx906) served by the
+    router is not listed, so the pre-flight must probe before trusting it. A real
+    refusal (strict-rejected -> 400) and a dead endpoint must still fail loudly.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "bench_cli_preflight", repo_root / "bench.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    server = _openai_stub_server()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        assert cli._check_endpoint_model(base, "gfx906") is None
+        assert cli._check_endpoint_model(base + "/v1", "gfx906") is None
+        err = cli._check_endpoint_model(base, "strict-rejected")
+        assert err and "not served" in err
+        assert "not reachable" in cli._check_endpoint_model("http://127.0.0.1:1", "m")
+    finally:
+        server.shutdown()

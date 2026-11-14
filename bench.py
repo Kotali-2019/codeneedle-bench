@@ -704,17 +704,22 @@ def _corpus_hint(name: str) -> str:
 
 
 def _check_endpoint_model(base_url: str, model: str) -> str | None:
-    """Cheap pre-flight: is the endpoint up, and does it
-    serve this model id?
+    """Cheap pre-flight: is the endpoint up, and does it accept this model id?
 
-    A dead endpoint or a strict server (vLLM rejects
-    unlisted model ids with HTTP 400) must fail here —
-    before the user spends a selection on the --corpus all
-    checklist — not at the first query of the first
-    corpus. Returns None when the check passes or the
-    server cannot verify (no /v1/models listing).
+    Returns None when the endpoint is usable. A dead endpoint must fail here —
+    before the user spends a selection on the --corpus all checklist — not at
+    the first query of the first corpus.
+
+    A server's /v1/models listing is only a hint, never proof of rejection:
+    vLLM serves weights under aliases (--served-model-name), and LM Studio
+    answers any id, so an id absent from the listing can still be served. An
+    id missing from the listing is therefore probed directly — a 1-token
+    completion is the authoritative test, because a strict server (vLLM
+    --served-model-name with no alias, a router with a fixed allow-list)
+    answers 400/404 for an id it does not serve, while a lenient server
+    answers 200. Only the probe's rejection is trusted as fatal.
     """
-    from bench.client import list_served_models
+    from bench.client import ClientConfig, chat_complete, list_served_models
 
     try:
         served = list_served_models(base_url)
@@ -726,8 +731,15 @@ def _check_endpoint_model(base_url: str, model: str) -> str | None:
     ids = [m.get("id") for m in served if m.get("id")]
     if not ids or model in ids:
         return None
-    return (f"model '{model}' is not served by {base_url}; "
-            f"served ids: {', '.join(ids)}")
+    # Listed ids exist, this one is absent. Probe before trusting the listing.
+    probe = ClientConfig(base_url=base_url, model=model,
+                         temperature=0.0, max_tokens=1, timeout=30.0)
+    try:
+        chat_complete(probe, system=None, user="ok")
+        return None
+    except Exception as e:
+        return (f"model '{model}' is not served by {base_url} "
+                f"(served ids: {', '.join(ids)}); probe rejected it: {e}")
 
 
 def _fs_label(name: str) -> str:

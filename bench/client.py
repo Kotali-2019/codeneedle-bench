@@ -23,6 +23,20 @@ class ClientConfig:
     use_max_completion_tokens: bool = False  # send `max_completion_tokens` instead of `max_tokens` (required by OpenAI GPT-5 family)
 
 
+def api_base(base_url: str) -> str:
+    """Normalize an OpenAI-compatible base URL to its API root.
+
+    Endpoints live under a single `/v1` prefix, but callers pass either form:
+    the OpenAI-SDK style (`http://host:port/v1`) and the LM Studio style
+    (`http://host:port`, the repo default). Joining `/v1/...` onto whichever
+    string was passed double-prefixes the one that already ends in `/v1`
+    (`…/v1/v1/models` → HTTP 404). Returning the root with exactly one trailing
+    `/v1` makes both forms resolve to the same, correct endpoints.
+    """
+    root = base_url.rstrip("/")
+    return root if root.endswith("/v1") else f"{root}/v1"
+
+
 def list_served_models(base_url: str, timeout: float = 10.0) -> list[dict] | None:
     """GET /v1/models and return the served model entries.
 
@@ -34,7 +48,7 @@ def list_served_models(base_url: str, timeout: float = 10.0) -> list[dict] | Non
     """
     try:
         with httpx.Client(timeout=timeout) as client:
-            r = client.get(base_url.rstrip("/") + "/v1/models")
+            r = client.get(api_base(base_url) + "/models")
             r.raise_for_status()
             return r.json().get("data", [])
     except (httpx.HTTPStatusError, ValueError):
@@ -54,7 +68,7 @@ def served_model_identity(base_url: str, model: str) -> dict | None:
     """
     try:
         with httpx.Client(timeout=10.0) as client:
-            resp = client.get(base_url.rstrip("/") + "/v1/models")
+            resp = client.get(api_base(base_url) + "/models")
             resp.raise_for_status()
             for entry in resp.json().get("data", []):
                 if entry.get("id") == model:
@@ -97,7 +111,7 @@ def chat_complete(cfg: ClientConfig, system: str | None, user: str) -> str:
     headers = {"Content-Type": "application/json"}
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
-    url = f"{cfg.base_url.rstrip('/')}/v1/chat/completions"
+    url = f"{api_base(cfg.base_url)}/chat/completions"
     with httpx.Client(timeout=cfg.timeout) as client:
         r = client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:
